@@ -13,3 +13,5 @@ figures/
 results/
 logs/
 probe_results/
+test.ipynb
+s3_*/
