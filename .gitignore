@@ -13,5 +13,7 @@ figures/
 results/
 logs/
 probe_results/
-test.ipynb
-s3_*/
+*.ipynb
+s3*/
+test.py
+pyrightconfig.json
