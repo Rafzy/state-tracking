@@ -1,149 +1,308 @@
 """
-Common model utilities for setting up tokenizers and models.
+Common model utilities – tokenizer & model setup for all supported architectures.
+
+Supported model_type strings
+─────────────────────────────
+  gpt2      – GPT-2 family (gpt2, gpt2-medium, gpt2-large, gpt2-xl, distilgpt2)
+  pythia    – EleutherAI Pythia (GPT-NeoX)
+  llama     – LLaMA / LLaMA-2 / LLaMA-3
+  bloom     – BigScience BLOOM
+  opt       – Meta OPT
+  falcon    – TII UAE Falcon
+  mamba     – Mamba SSM (state-spaces/mamba-*)
+  mistral   – Mistral AI Mistral / Mixtral
+  phi       – Microsoft Phi-2 / Phi-3
+
+The helpers infer the type from the model name string when *model_type* is
+not provided explicitly, but callers that already know the type should pass
+it in to avoid mis-detection.
 """
+
+from __future__ import annotations
+
+import os
+import warnings
+from typing import Optional
+
+import torch
 from transformers import (
-    AutoTokenizer,
     AutoConfig,
     AutoModelForCausalLM,
-    GPT2LMHeadModel, 
+    AutoTokenizer,
+    BloomForCausalLM,
+    BloomConfig,
     GPT2Config,
+    GPT2LMHeadModel,
+    LlamaConfig,
     LlamaForCausalLM,
-    LlamaConfig
+    MistralConfig,
+    MistralForCausalLM,
+    OPTConfig,
+    OPTForCausalLM,
 )
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
-import torch
-import os
 
-# Import custom model classes
+# Optional imports – wrapped so the repo still works if a package isn't installed
+try:
+    from transformers import FalconForCausalLM, FalconConfig
+    _FALCON_AVAILABLE = True
+except ImportError:
+    FalconForCausalLM = None
+    FalconConfig = None
+    _FALCON_AVAILABLE = False
+
+try:
+    from transformers import MambaForCausalLM, MambaConfig
+    _MAMBA_AVAILABLE = True
+except ImportError:
+    MambaForCausalLM = None
+    MambaConfig = None
+    _MAMBA_AVAILABLE = False
+
+try:
+    from transformers import PhiForCausalLM, PhiConfig
+    _PHI_AVAILABLE = True
+except ImportError:
+    PhiForCausalLM = None
+    PhiConfig = None
+    _PHI_AVAILABLE = False
+
 from utils.models import (
     GPT2ModelWithLayerTargets,
     LlamaModelWithLayerTargets,
-    PythiaModelWithLayerTargets
+    PythiaModelWithLayerTargets,
+    BloomModelWithLayerTargets,
+    OPTModelWithLayerTargets,
+    MistralModelWithLayerTargets,
+    FalconModelWithLayerTargets,
+    MambaModelWithLayerTargets,
+    PhiModelWithLayerTargets,
 )
 
 
-def setup_tokenizer(model_name, state_tokens, action_tokens):
-    """
-    Set up the tokenizer based on the model type.
-    
-    Args:
-        model_name: Name of the model to load tokenizer for
-        state_tokens: Dictionary of state -> state tokens
-        action_tokens: Dictionary of action -> action tokens
-        
-    Returns:
-        tokenizer: The tokenizer
-    """
+# ---------------------------------------------------------------------------
+# Architecture registry
+# ---------------------------------------------------------------------------
+# Each entry maps a *model_type* key to:
+#   base_class      – plain HF causal-LM class
+#   custom_class    – our LayerTarget wrapper
+#   config_class    – HF config class
+#   keywords        – substrings in model-name that identify this architecture
+
+_ARCH_REGISTRY: dict[str, dict] = {
+    "gpt2": {
+        "base_class": GPT2LMHeadModel,
+        "custom_class": GPT2ModelWithLayerTargets,
+        "config_class": GPT2Config,
+        "keywords": ["gpt2", "distilgpt2"],
+    },
+    "pythia": {
+        "base_class": GPTNeoXForCausalLM,
+        "custom_class": PythiaModelWithLayerTargets,
+        "config_class": AutoConfig,
+        "keywords": ["pythia", "gpt-neox", "neox"],
+    },
+    "llama": {
+        "base_class": LlamaForCausalLM,
+        "custom_class": LlamaModelWithLayerTargets,
+        "config_class": LlamaConfig,
+        "keywords": ["llama", "llama2", "llama3", "vicuna", "alpaca", "mistral"],
+    },
+    "bloom": {
+        "base_class": BloomForCausalLM,
+        "custom_class": BloomModelWithLayerTargets,
+        "config_class": BloomConfig,
+        "keywords": ["bloom"],
+    },
+    "opt": {
+        "base_class": OPTForCausalLM,
+        "custom_class": OPTModelWithLayerTargets,
+        "config_class": OPTConfig,
+        "keywords": ["opt"],
+    },
+    "falcon": {
+        "base_class": FalconForCausalLM,
+        "custom_class": FalconModelWithLayerTargets,
+        "config_class": FalconConfig,
+        "keywords": ["falcon", "rw-"],
+    },
+    "mamba": {
+        "base_class": MambaForCausalLM,
+        "custom_class": MambaModelWithLayerTargets,
+        "config_class": MambaConfig,
+        "keywords": ["mamba"],
+    },
+    "mistral": {
+        "base_class": MistralForCausalLM,
+        "custom_class": MistralModelWithLayerTargets,
+        "config_class": MistralConfig,
+        "keywords": ["mistral", "mixtral"],
+    },
+    "phi": {
+        "base_class": PhiForCausalLM,
+        "custom_class": PhiModelWithLayerTargets,
+        "config_class": PhiConfig,
+        "keywords": ["phi"],
+    },
+}
+
+# Remove entries whose optional dependencies aren't installed
+for _key in ["falcon", "mamba", "phi"]:
+    _avail = {"falcon": _FALCON_AVAILABLE, "mamba": _MAMBA_AVAILABLE, "phi": _PHI_AVAILABLE}
+    if not _avail[_key]:
+        _ARCH_REGISTRY[_key]["base_class"] = None
+        _ARCH_REGISTRY[_key]["custom_class"] = None
+        _ARCH_REGISTRY[_key]["config_class"] = None
+
+
+def infer_model_type(model_name: str) -> str:
+    """Guess model_type from *model_name* using the keyword table."""
+    name_lower = model_name.lower()
+    # gpt2 must come before llama so "mistral" in llama keywords doesn't win
+    for mtype, entry in _ARCH_REGISTRY.items():
+        for kw in entry["keywords"]:
+            if kw in name_lower:
+                return mtype
+    return "auto"  # fallback – use AutoModelForCausalLM
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+def setup_tokenizer(model_name: str, state_tokens: dict, action_tokens: dict):
+    """Load and configure a tokenizer, adding task-specific special tokens."""
     print("Loading tokenizer")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
     tokenizer.pad_token = tokenizer.eos_token
-    
-    # Add special tokens for the task
-    tokenizer.add_tokens(list(action_tokens.values()) + [f" {action}" for action in action_tokens.values()])
-    tokenizer.add_tokens(list(state_tokens.values()) + [f" {state}" for state in state_tokens.values()])
-    
+
+    tokenizer.add_tokens(
+        list(action_tokens.values())
+        + [f" {a}" for a in action_tokens.values()]
+    )
+    tokenizer.add_tokens(
+        list(state_tokens.values())
+        + [f" {s}" for s in state_tokens.values()]
+    )
     return tokenizer
 
 
-def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=False, 
-                no_pretrain=False, output_dir=None, use_custom_models=False,
-                layerwise_supervision_config=None):
+def setup_model(
+    tokenizer,
+    model_name: Optional[str] = None,
+    checkpoint_path: Optional[str] = None,
+    use_bfloat16: bool = False,
+    no_pretrain: bool = False,
+    output_dir: Optional[str] = None,
+    use_custom_models: bool = False,
+    layerwise_supervision_config=None,
+    model_type: Optional[str] = None,
+):
     """
-    Set up the model based on the model type and arguments.
-    
-    Args:
-        model_name: Name of the model to load
-        tokenizer: The tokenizer
-        checkpoint_path: Path to checkpoint to load from
-        use_bfloat16: Whether to use bfloat16 precision
-        no_pretrain: Whether to initialize a new model with random weights
-        output_dir: Output directory for checkpoints (for training)
-        use_custom_models: Whether to use custom model classes
-        layerwise_supervision_config: Configuration for layerwise supervision
-        
-    Returns:
-        model: The language model
+    Load or initialise a causal-LM for any supported architecture.
+
+    Resolution order for model_type:
+      1. Explicit *model_type* argument
+      2. Inferred from *model_name* via keyword matching
+      3. 'auto' → AutoModelForCausalLM (best-effort)
     """
     print("Loading model")
-    
-    if model_name:
-        # Determine model configuration and class
-        if "gpt" in model_name.lower():
-            config_class = GPT2Config
-            model_class = GPT2ModelWithLayerTargets if use_custom_models else GPT2LMHeadModel
-        elif "pythia" in model_name.lower():
-            config_class = AutoConfig
-            model_class = PythiaModelWithLayerTargets if use_custom_models else GPTNeoXForCausalLM
-        else:
-            config_class = LlamaConfig
-            model_class = LlamaModelWithLayerTargets if use_custom_models else LlamaForCausalLM
-    else:
-        model_class = AutoModelForCausalLM
-        config_class = AutoConfig
-    
-    # Check for checkpoints in output directory (for training)
+    dtype = torch.bfloat16 if use_bfloat16 else torch.float32
+
+    # Resolve model_type
+    if model_type is None and model_name:
+        model_type = infer_model_type(model_name)
+    elif model_type is None:
+        model_type = "auto"
+
+    entry = _ARCH_REGISTRY.get(model_type, {})
+    base_class = entry.get("base_class") or AutoModelForCausalLM
+    custom_class = entry.get("custom_class")
+    config_class = entry.get("config_class") or AutoConfig
+
+    # Check that optional deps are available
+    if base_class is None:
+        raise ImportError(
+            f"Model type '{model_type}' requires an optional dependency that is "
+            "not installed. Install it with `pip install transformers[{model_type}]` "
+            "or see the model card for installation instructions."
+        )
+
+    model_class = custom_class if (use_custom_models and custom_class) else base_class
+
+    # ── Find an existing checkpoint in output_dir (for training resumption) ──
     if not checkpoint_path and output_dir and os.path.exists(output_dir):
-        subdirs = [d for d in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, d))]
-        if len(subdirs) > 0:
-            # Filter for subdirectories that match the expected pattern "checkpoint-NUMBER"
-            valid_subdirs = []
-            for subdir in subdirs:
-                parts = subdir.split("-")
-                if len(parts) >= 2 and parts[0] == "checkpoint" and parts[1].isdigit():
-                    valid_subdirs.append(subdir)
-            
-            if valid_subdirs:
-                min_subdir = min(valid_subdirs, key=lambda x: int(x.split("-")[1]))
-                checkpoint_path = os.path.join(output_dir, min_subdir)
-            else:
-                print(f"Warning: Found subdirectories in {output_dir}, but none match the expected 'checkpoint-NUMBER' format.")
-    
-    # Load or create model
+        subdirs = [
+            d for d in os.listdir(output_dir)
+            if os.path.isdir(os.path.join(output_dir, d))
+        ]
+        valid = [
+            s for s in subdirs
+            if s.startswith("checkpoint-") and s.split("-")[1].isdigit()
+        ]
+        if valid:
+            checkpoint_path = os.path.join(
+                output_dir, min(valid, key=lambda x: int(x.split("-")[1]))
+            )
+
+    # ── Load / create model ──────────────────────────────────────────────────
+    common_from_pretrained_kwargs = dict(
+        torch_dtype=dtype,
+    )
+
     if checkpoint_path:
         print(f"Loading model from checkpoint: {checkpoint_path}")
-        if use_custom_models:
+        if use_custom_models and custom_class:
             model = model_class.from_pretrained(
                 checkpoint_path,
                 device_map="auto",
-                torch_dtype=torch.bfloat16 if use_bfloat16 else torch.float32,
+                layerwise_supervision_config=layerwise_supervision_config,
+                **common_from_pretrained_kwargs,
+            )
+        else:
+            model = model_class.from_pretrained(
+                checkpoint_path, **common_from_pretrained_kwargs
+            )
+
+    elif no_pretrain:
+        print("Initialising model with random weights")
+        if config_class is AutoConfig:
+            config = AutoConfig.from_pretrained(model_name)
+        else:
+            config = config_class.from_pretrained(model_name)
+
+        if use_custom_models and custom_class:
+            model = model_class(
+                config,
                 layerwise_supervision_config=layerwise_supervision_config,
             )
         else:
-            model = model_class.from_pretrained(checkpoint_path)
-    elif no_pretrain:
-        # Initialize a new model with random weights
-        print("Initializing model with random weights")
-        config = config_class.from_pretrained(model_name)
-        if use_custom_models:
-            config.torch_dtype = torch.bfloat16 if use_bfloat16 else torch.float32
-            model = model_class(config, layerwise_supervision_config=layerwise_supervision_config)
-        else:
             model = model_class(config)
+
     else:
-        # Load pre-trained model
-        if use_custom_models:
+        print(f"Loading pre-trained model: {model_name}")
+        if use_custom_models and custom_class:
             model = model_class.from_pretrained(
                 model_name,
                 device_map="auto",
-                torch_dtype=torch.bfloat16 if use_bfloat16 else torch.float32,
                 layerwise_supervision_config=layerwise_supervision_config,
+                **common_from_pretrained_kwargs,
             )
         else:
-            model = model_class.from_pretrained(model_name)
-    
-    # Resize token embeddings to match tokenizer
+            model = model_class.from_pretrained(
+                model_name, **common_from_pretrained_kwargs
+            )
+
     model.resize_token_embeddings(len(tokenizer))
-    
-    # Set up precision
+
     if use_bfloat16:
         model = model.to(torch.bfloat16)
-    
-    # Enable gradient checkpointing for multi-GPU training (for training)
+
+    # Multi-GPU (training only)
     if use_custom_models and torch.cuda.device_count() > 1:
         model.gradient_checkpointing_enable()
         model = torch.nn.DataParallel(model)
         model.module.gradient_checkpointing_enable()
-    
+
     model = model.to("cuda")
-    return model 
+    return model

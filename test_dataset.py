@@ -53,4 +53,4 @@ def test_map_functionality():
     print("Test completed successfully!")
 
 if __name__ == "__main__":
-    test_map_functionality() 
+    test_map_functionality()

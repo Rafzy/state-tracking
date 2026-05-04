@@ -1,344 +1,347 @@
-import numpy as np
-import random
-from tqdm import tqdm
-from typing import Set, Dict, List, Tuple, Any
-from permutation_task import compute_parity
-from interpret.interpreters.base_interpreter import BaseInterpreter
-import torch
+"""
+Activation-patching interpreter.
+
+Uses the architecture-agnostic helpers in BaseInterpreter to trace hidden
+states and perform substitution / deletion patching across all supported
+model types.
+"""
+
+from __future__ import annotations
+
 import os
+from typing import Any, Dict, List, Set, Tuple
+
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from interpret.interpreters.base_interpreter import BaseInterpreter
+from permutation_task import compute_parity
 
 
 class ActivationPatchingInterpreter(BaseInterpreter):
-    """Class for activation patching analysis."""
-    def __init__(
-        self,
-        *args,
-        **kwargs,
-    ):
+    """Activation patching analysis for any supported architecture."""
+
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.intervene_output_type = kwargs.get("intervene_output_type", "state")
         self.patching_mode = kwargs.get("patching_mode", "substitution")
         self.token_increments = kwargs.get("token_increments", 1)
-    
-    def generate_prompt_pairs(self, prompts: Set[str], diff_parity=False) -> Dict[str, List[Tuple[str, str]]]:
-        """Generate pairs of prompts for analysis"""
+
+    # ── Prompt pair generation ────────────────────────────────────────────────
+
+    def generate_prompt_pairs(
+        self, prompts: Set[str], diff_parity: bool = False
+    ) -> Dict[str, List[Tuple[str, str]]]:
+        """Generate minimal pairs for patching experiments."""
+        import random
+
         if diff_parity:
-            pairs = {
-                "same_parity": [],
-                "diff_parity": [],
-            }
+            pairs: Dict[str, List] = {"same_parity": [], "diff_parity": []}
         else:
-            pairs = {
-                "all": [],
-            }
+            pairs = {"all": []}
+
         for prompt in prompts:
             item_to_replace = 0
             split_prompt = prompt.split()
+            action_parity = compute_parity(
+                self.nl_to_action[split_prompt[item_to_replace]]
+            )
 
-            action_parity = compute_parity(self.nl_to_action[split_prompt[item_to_replace]])
             for parity_type in pairs:
-                if parity_type == "same_parity" or parity_type == "all":
-                    # Generate same parity pair
-                    correct_parity_actions = [
-                        action for action in self.action_to_nl
-                        if compute_parity(action) == action_parity and action != self.nl_to_action[split_prompt[item_to_replace]]
+                sp = list(split_prompt)  # fresh copy per parity type
+                if parity_type in ("same_parity", "all"):
+                    candidates = [
+                        a for a in self.action_to_nl
+                        if compute_parity(a) == action_parity
+                        and a != self.nl_to_action[sp[item_to_replace]]
                     ]
-                    split_prompt[item_to_replace] = self.action_to_nl[random.choice(correct_parity_actions)]
-                    new_prompt = " ".join(split_prompt)
-                    pairs[parity_type].append((prompt, new_prompt))
-                if parity_type == "diff_parity" or parity_type == "all":
-                    # Generate different parity pair
-                    other_parity_actions = [
-                        action for action in self.action_to_nl
-                        if compute_parity(action) != action_parity
+                    sp[item_to_replace] = self.action_to_nl[random.choice(candidates)]
+                    pairs[parity_type].append((prompt, " ".join(sp)))
+
+                elif parity_type == "diff_parity":
+                    sp = list(split_prompt)
+                    candidates = [
+                        a for a in self.action_to_nl if compute_parity(a) != action_parity
                     ]
-                    split_prompt[item_to_replace] = self.action_to_nl[random.choice(other_parity_actions)]
-                    new_prompt = " ".join(split_prompt)
-                    pairs[parity_type].append((prompt, new_prompt))
-            
+                    sp[item_to_replace] = self.action_to_nl[random.choice(candidates)]
+                    pairs[parity_type].append((prompt, " ".join(sp)))
+
         return pairs
+
+    # ── Hidden-state extraction ──────────────────────────────────────────────
 
     def get_hs_logits(
         self,
-        prompt,
+        prompt: str,
         layer_components=None,
     ):
-        """Get hidden states and logits for a given prompt"""
-        hidden_states = {}
-        n_layers = self.model.config.num_hidden_layers if self.model_type != "gpt2" else self.model.config.n_layer
-        
+        """
+        Extract hidden states and final logits for *prompt* using nnsight.
+
+        Returns a tuple (hidden_states_dict, logit_dict).
+        """
+        hidden_states: Dict[int, Dict[str, Any]] = {}
+        arch = self._arch_desc
+
         with torch.no_grad():
             with self.model.trace() as tracer:
-                with tracer.invoke(prompt) as invoker:
-                    # Get embeddings
-                    hidden_states = {-1: {"embed": self.embeddings.output[0].cpu().save()}}
-                        
-                    # Get hidden states for all layers
-                    for layer_idx in range(n_layers):
-                        if self.model_type == "gpt2":
-                            hidden_states[layer_idx] = {
-                                "ln1": self.model_layers[layer_idx].ln_1.output[0].cpu().save(),
-                                "attn": self.model_layers[layer_idx].attn.output[0].cpu().save(),
-                                "ln2": self.model_layers[layer_idx].ln_2.output[0].cpu().save(),
-                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
-                            }
-                        elif self.model_type == "llama":
-                            hidden_states[layer_idx] = {
-                                "ln1": self.model_layers[layer_idx].input_layernorm.output[0].cpu().save(),
-                                "attn": self.model_layers[layer_idx].self_attn.output[0].cpu().save(),
-                                "ln2": self.model_layers[layer_idx].post_attention_layernorm.output[0].cpu().save(),
-                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
-                            }
-                        elif self.model_type == "pythia":
-                            hidden_states[layer_idx] = {
-                                "ln1": self.model_layers[layer_idx].input_layernorm.output[0].cpu().save(),
-                                "attn": self.model_layers[layer_idx].attention.output[0].cpu().save(),
-                                "ln2": self.model_layers[layer_idx].post_attention_layernorm.output[0].cpu().save(),
-                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
-                            }
-                    
-                    # Get specific components if requested
+                with tracer.invoke(prompt):
+                    # Embedding layer
+                    hidden_states[-1] = {"embed": self.embeddings.output[0].cpu().save()}
+
+                    # Per-layer components
+                    for layer_idx in range(self.n_layers):
+                        layer = self.model_layers[layer_idx]
+                        hs: Dict[str, Any] = {}
+
+                        # Always grab the residual stream output
+                        hs["output"] = layer.output[0].cpu().save()
+
+                        # Architecture-specific sub-components
+                        attn_path = arch.get("attn_path")
+                        mlp_path = arch.get("mlp_path")
+                        ln1_path = arch.get("ln1_path")
+                        ln2_path = arch.get("ln2_path")
+
+                        if attn_path:
+                            try:
+                                attn_out = getattr(layer, attn_path).output
+                                hs["attn"] = (
+                                    attn_out[0] if isinstance(attn_out, tuple) else attn_out
+                                ).cpu().save()
+                            except Exception:
+                                pass
+
+                        if mlp_path and mlp_path != attn_path:
+                            try:
+                                mlp_out = getattr(layer, mlp_path).output
+                                hs["mlp"] = (
+                                    mlp_out[0] if isinstance(mlp_out, tuple) else mlp_out
+                                ).cpu().save()
+                            except Exception:
+                                pass
+
+                        if ln1_path:
+                            try:
+                                ln1_out = getattr(layer, ln1_path).output
+                                hs["ln1"] = (
+                                    ln1_out[0] if isinstance(ln1_out, tuple) else ln1_out
+                                ).cpu().save()
+                            except Exception:
+                                pass
+
+                        if ln2_path and ln2_path != ln1_path:
+                            try:
+                                ln2_out = getattr(layer, ln2_path).output
+                                hs["ln2"] = (
+                                    ln2_out[0] if isinstance(ln2_out, tuple) else ln2_out
+                                ).cpu().save()
+                            except Exception:
+                                pass
+
+                        hidden_states[layer_idx] = hs
+
+                    # Extra components requested by the caller
                     if layer_components is not None:
                         for layer_idx, component in layer_components:
-                            if component not in hidden_states[layer_idx]:
-                                component_parts = component.split(".")
-                                model_component = self.model_layers[layer_idx]
-                                for component_part in component_parts:
-                                    model_component = getattr(model_component, component_part)
-                                model_component = model_component[0]
-                                if component in ["output", "attn.output", "self_attn.output","attention.output"]:
-                                    model_component = model_component[0]
-                                hidden_states[layer_idx][component] = model_component.cpu().save()
-                    
-                    # Get logits from the lm_head
-                    clean_logits = self.sf(self.lm_head.output)
+                            if component not in hidden_states.get(layer_idx, {}):
+                                try:
+                                    comp = self._get_layer_component(layer_idx, component)
+                                    hidden_states.setdefault(layer_idx, {})[component] = (
+                                        comp.cpu().save()
+                                    )
+                                except Exception:
+                                    pass
+
+                    # Logits
+                    clean_logits_raw = self.sf(self.lm_head.output)
                     clean_logits = {
-                        action: clean_logits[-1,-1,self.action_to_token_ids[action]].cpu().to(dtype=float).item().save()
+                        action: clean_logits_raw[-1, -1, self.action_to_token_ids[action]]
+                        .cpu()
+                        .to(dtype=float)
+                        .item()
+                        .save()
                         for action in self.action_to_token_ids
                     }
-        
-        clean_logits = {action: clean_logits[action] * 1.0 for action in clean_logits}
+
+        clean_logits = {a: clean_logits[a] * 1.0 for a in clean_logits}
         return hidden_states, clean_logits
+
+    # ── Patching ─────────────────────────────────────────────────────────────
 
     def get_patching_results_pair(
         self,
-        minimal_pair,
-        layer_components,
-        token_units=1,
-        replace_prev_tokens=False,
-        replace_next_tokens=False,
-        patching_mode="substitution",
+        minimal_pair: Tuple[str, str],
+        layer_components: List[Tuple[int, str]],
+        token_units: int = 1,
+        replace_prev_tokens: bool = False,
+        replace_next_tokens: bool = False,
+        patching_mode: str = "substitution",
     ):
-        """Get patching results for a pair of prompts"""
-        # Get hidden states and logits for both prompts
+        """Run activation patching for a single prompt pair."""
         _, new_logits = self.get_hs_logits(minimal_pair[1], layer_components)
         _, base_logits = self.get_hs_logits(minimal_pair[0], layer_components)
-        
+
         all_patching_logits = []
         prompt_tokens = self.tokenizer.tokenize(minimal_pair[0])
-        
+
         with torch.no_grad():
-            # Iterate through all the layers
-            for lc_idx, (layer_idx, component) in enumerate(layer_components):
+            for layer_idx, component in layer_components:
                 _patching_logits = []
-                
-                # Iterate through tokens in chunks of token_units
+
                 for token_idx in range(0, len(prompt_tokens), token_units):
-                    # Determine token range to patch
                     if replace_prev_tokens:
-                        token_range = np.arange(0, min(len(prompt_tokens), token_idx+token_units))
+                        token_range = np.arange(0, min(len(prompt_tokens), token_idx + token_units))
                     elif replace_next_tokens:
                         token_range = np.arange(token_idx, len(prompt_tokens))
                     else:
-                        token_range = np.arange(token_idx, min(len(prompt_tokens), token_idx+token_units))
-                    
-                    # Perform patching using nnsight
+                        token_range = np.arange(
+                            token_idx, min(len(prompt_tokens), token_idx + token_units)
+                        )
+
                     with self.model.trace() as tracer:
-                        # Get replacement values if not using deletion patching
+                        # Get replacement values (substitution patching)
+                        replace_val = None
                         if patching_mode == "substitution":
-                            with tracer.invoke(minimal_pair[1]) as invoker:
-                                # Get the component to replace from
+                            with tracer.invoke(minimal_pair[1]):
                                 if layer_idx == -1:
-                                    replace_model_component = self.embeddings.output[0]
+                                    replace_val = self.embeddings.output[0]
                                 else:
-                                    component_parts = component.split(".")
-                                    replace_model_component = self.model_layers[layer_idx]
-                                    for component_part in component_parts:
-                                        replace_model_component = getattr(replace_model_component, component_part)
-                                    replace_model_component = replace_model_component[0]
-                                    if component in ["attn.output", "output", "attention.output", "self_attn.output"]:
-                                        replace_model_component = replace_model_component[0]
-                        
-                        # Apply the patch to the original prompt
-                        with tracer.invoke(minimal_pair[0]) as invoker:
-                            # Handle embeddings layer
+                                    replace_val = self._get_layer_component(layer_idx, component)
+
+                        # Apply patch to base prompt
+                        with tracer.invoke(minimal_pair[0]):
                             if layer_idx == -1:
-                                if patching_mode == "deletion":
-                                    self.embeddings.output[0][token_range] = 0
-                                else:
-                                    self.embeddings.output[0][token_range] = replace_model_component[token_range]
-                            # Handle other layers
+                                tgt = self.embeddings.output[0]
                             else:
-                                component_parts = component.split(".")
-                                model_component = self.model_layers[layer_idx]
-                                for component_part in component_parts:
-                                    model_component = getattr(model_component, component_part)
-                                model_component = model_component[0]
-                                if component in ["attn.output", "output", "attention.output", "self_attn.output"]:
-                                    model_component = model_component[0]
-                                
-                                if patching_mode == "deletion":
-                                    model_component[token_range] = 0
-                                else:
-                                    model_component[token_range] = replace_model_component[token_range]
-                            
-                            # Get logits from the patched model
-                            patched_logits = self.sf(self.lm_head.output)
+                                tgt = self._get_layer_component(layer_idx, component)
+
+                            if patching_mode == "deletion":
+                                tgt[token_range] = 0
+                            else:
+                                tgt[token_range] = replace_val[token_range]
+
+                            patched_logits_raw = self.sf(self.lm_head.output)
                             patched_logits = {
-                                action: patched_logits[-1, -1, self.action_to_token_ids[action]].cpu().to(dtype=float).item().save()
+                                action: patched_logits_raw[-1, -1, self.action_to_token_ids[action]]
+                                .cpu()
+                                .to(dtype=float)
+                                .item()
+                                .save()
                                 for action in self.action_to_token_ids
                             }
-                    
-                    # Store the patched logits
-                    _patching_logits.append({
-                        action: patched_logits[action] * 1.0 for action in patched_logits
-                    })
-                
+
+                    _patching_logits.append({a: patched_logits[a] * 1.0 for a in patched_logits})
+
                 all_patching_logits.append(_patching_logits)
-        
+
         return all_patching_logits, base_logits, new_logits
+
+    # ── Metrics ──────────────────────────────────────────────────────────────
 
     def get_metric_from_logits(
         self,
         patching_results,
         base_logits,
         new_logits,
-        patching_mode="substitution",
+        patching_mode: str = "substitution",
     ):
-        """Calculate metrics from patching results"""
+        """Normalised logit-difference metric from activation patching."""
         base_answer = max(base_logits, key=base_logits.get)
         new_answer = max(new_logits, key=new_logits.get)
-        if patching_mode == "substitution":
-            answer = new_answer
-        else:
-            answer = base_answer
+        answer = new_answer if patching_mode == "substitution" else base_answer
         all_actions = list(self.action_to_nl.values())
         correct_actions = [answer]
-        if patching_mode == "substitution":
-            incorrect_actions = [base_answer]
-        else:
-            incorrect_actions = [
-                action for action in all_actions
-                if action != answer
-            ]
+        incorrect_actions = (
+            [base_answer]
+            if patching_mode == "substitution"
+            else [a for a in all_actions if a != answer]
+        )
 
-        # n_layers x seq_len x n_correct_actions
-        correct_logits = np.array([[
-            [component[action] for action in correct_actions]
-            for component in layer
-        ] for layer in patching_results])
-        # n_layers x seq_len x n_incorrect_actions
-        incorrect_logits = np.array([[
-            [component[action] for action in incorrect_actions]
-            for component in layer
-        ] for layer in patching_results])
+        correct_logits = np.array([
+            [[comp[a] for a in correct_actions] for comp in layer]
+            for layer in patching_results
+        ])
+        incorrect_logits = np.array([
+            [[comp[a] for a in incorrect_actions] for comp in layer]
+            for layer in patching_results
+        ])
 
-        # sum up the ones with the correct parity minus ones with wrong parity
         logit_diff = correct_logits.max(-1) - incorrect_logits.max(-1)
 
-        base_correct_probs = np.array([
-            base_logits[action] for action in correct_actions
-        ]).max(-1)
-        base_incorrect_probs = np.array([
-            base_logits[action] for action in incorrect_actions
-        ]).max(-1)
-        base_logit_diff = base_correct_probs - base_incorrect_probs
+        base_correct = np.array([base_logits[a] for a in correct_actions]).max()
+        base_incorrect = np.array([base_logits[a] for a in incorrect_actions]).max()
+        base_logit_diff = base_correct - base_incorrect
 
-        # Calculate the metric based on patching mode
         if patching_mode == "deletion":
-            # For deletion patching, assume new_logit_diff is 0
             delta_metric = (logit_diff - base_logit_diff) / (0 - base_logit_diff)
-            # delta_metric = logit_diff / -base_logit_diff
-        else:  # substitution patching
-            new_correct_probs = np.array([
-                new_logits[action] for action in correct_actions
-            ]).max(-1)
-            new_incorrect_probs = np.array([
-                new_logits[action] for action in incorrect_actions
-            ]).max(-1)
-            new_logit_diff = new_correct_probs - new_incorrect_probs
+        else:
+            new_correct = np.array([new_logits[a] for a in correct_actions]).max()
+            new_incorrect = np.array([new_logits[a] for a in incorrect_actions]).max()
+            new_logit_diff = new_correct - new_incorrect
             delta_metric = (logit_diff - base_logit_diff) / (new_logit_diff - base_logit_diff)
-        
-        # Cap to [0,1]
-        delta_metric = np.clip(delta_metric, 0, 1)
-        return delta_metric
+
+        return np.clip(delta_metric, 0, 1)
+
+    # ── Main entry point ─────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Run activation patching analysis"""
+        """Run full activation-patching analysis."""
         prompts = self.generate_prompts()
-
-        # Generate prompt pairs for patching
         pairs = self.generate_prompt_pairs(
-            prompts,
-            diff_parity="parity" in self.intervene_output_type,
+            prompts, diff_parity="parity" in self.intervene_output_type
         )
-        
-        # Set up layer components for patching
+
         layer_components = [(-1, "embed")]
         layer_names_plot = ["embed"]
-        
         for layer_idx, layer in enumerate(self.layer_names):
             for component in layer:
                 layer_components.append((layer_idx, component))
                 component_name = "res" if component == "output" else component
                 layer_names_plot.append(f"({layer_idx}, {component_name})")
-        
-        # Run patching for different intervention types
+
         for intervene_type in ["prefix", "suffix", "window"]:
-            for parity_type in pairs:                    
-                # Set up output directory
+            for parity_type in pairs:
                 output_fn = os.path.join(
                     self.checkpoint_dir,
                     f"{self.intervene_output_type}_{self.patching_mode}",
                 )
-                    
                 os.makedirs(f"figures/intervene/{output_fn}", exist_ok=True)
                 print(f"Saving to figures/intervene/{output_fn}")
-                
-                # Process pairs and collect results
+
                 all_logit_diffs = []
-                
-                for pair in tqdm(pairs[parity_type], desc=f"Processing {parity_type} pairs for {intervene_type}"):
-                    patching_results, base_logits, new_logits = self.get_patching_results_pair(
-                        pair,
-                        layer_components,
-                        token_units=self.token_increments,
-                        replace_prev_tokens=intervene_type == "prefix",
-                        replace_next_tokens=intervene_type == "suffix",
-                        patching_mode=self.patching_mode,
+                for pair in tqdm(
+                    pairs[parity_type],
+                    desc=f"Processing {parity_type} pairs for {intervene_type}",
+                ):
+                    patching_results, base_logits, new_logits = (
+                        self.get_patching_results_pair(
+                            pair,
+                            layer_components,
+                            token_units=self.token_increments,
+                            replace_prev_tokens=intervene_type == "prefix",
+                            replace_next_tokens=intervene_type == "suffix",
+                            patching_mode=self.patching_mode,
+                        )
                     )
-                    
-                    all_logit_diffs.append(self.get_metric_from_logits(
-                        patching_results, base_logits, new_logits, self.patching_mode,
-                    ))
-                
-                # Plot individual results
-                for i, (_, logit_diff) in enumerate(zip(pairs[parity_type], all_logit_diffs)):
+                    all_logit_diffs.append(
+                        self.get_metric_from_logits(
+                            patching_results, base_logits, new_logits, self.patching_mode
+                        )
+                    )
+
+                for i, (_, logit_diff) in enumerate(
+                    zip(pairs[parity_type], all_logit_diffs)
+                ):
                     self.visualization_manager.plot_logits(
                         logit_diff,
                         np.arange(0, self.n_tokens, self.token_increments),
                         layer_names_plot,
-                        plot_name=os.path.join(
-                            output_fn,
-                            f"{parity_type}/{i}/{intervene_type}",
-                        ),
+                        plot_name=os.path.join(output_fn, f"{parity_type}/{i}/{intervene_type}"),
                     )
-                
-                plot_name = os.path.join(
-                    output_fn,
-                    f"{intervene_type}_{parity_type}",
-                )
-                # Plot average results
+
+                plot_name = os.path.join(output_fn, f"{intervene_type}_{parity_type}")
                 self.visualization_manager.plot_logits(
                     np.stack(all_logit_diffs).mean(0),
                     np.arange(0, self.n_tokens, self.token_increments),

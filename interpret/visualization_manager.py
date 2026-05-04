@@ -154,4 +154,3 @@ class VisualizationManager:
             ax.grid(linestyle='--', alpha=0.4)
         else:
             ax.grid(axis='y', linestyle='--', alpha=0.4)
-

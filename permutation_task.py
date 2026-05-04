@@ -253,4 +253,4 @@ if __name__ == "__main__":
     
     print(f"Generated {len(stories)} stories with {args.num_items} items")
     print(f"Split: {train_count} train, {test_count} test (ratio: {train_count/(train_count+test_count):.2f})")
-    print("Sample story:", stories[0] if stories else "No stories generated") 
+    print("Sample story:", stories[0] if stories else "No stories generated")

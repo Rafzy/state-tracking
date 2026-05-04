@@ -1,3 +1,4 @@
+# Core
 numpy==2.2.3
 tqdm==4.67.1
 wandb==0.19.8
@@ -9,3 +10,18 @@ scikit-learn==1.6.1
 jupyter==1.1.1
 nnsight==0.4.3
 plotly==6.0.0
+
+# ── Optional architecture-specific packages ─────────────────────────────────
+# Mamba SSM  (install if you want to run mamba model_type)
+#   pip install mamba-ssm causal-conv1d
+#   The HuggingFace transformers MambaForCausalLM wrapper also requires:
+#   pip install transformers[mamba]
+#
+# Falcon  – included in transformers>=4.36; no extra install needed for
+#           tiiuae/falcon-7b / falcon-40b  (uses FalconForCausalLM)
+#
+# Phi-2 / Phi-3 – included in transformers>=4.40
+#
+# Mistral / Mixtral – included in transformers>=4.35
+#
+# BLOOM, OPT, LLaMA – included in stock transformers
