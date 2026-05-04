@@ -17,3 +17,4 @@ probe_results/
 s3*/
 test.py
 pyrightconfig.json
+*.zip
