@@ -242,7 +242,7 @@ def setup_model(
         ]
         if valid:
             checkpoint_path = os.path.join(
-                output_dir, min(valid, key=lambda x: int(x.split("-")[1]))
+                output_dir, max(valid, key=lambda x: int(x.split("-")[1]))
             )
 
     # ── Load / create model ──────────────────────────────────────────────────

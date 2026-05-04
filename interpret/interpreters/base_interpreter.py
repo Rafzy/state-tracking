@@ -44,6 +44,8 @@ from permutation_task import PermutationTask, compute_parity
 #   layer_components – list of sub-paths within each layer to trace
 #                      (used for activation-patching)
 
+_TRANSFORMER_TUPLE_OUTPUTS = ["output", "attn.output", "self_attn.output", "attention.output"]
+
 _ARCH_MAP: dict[str, dict] = {
     "gpt2": {
         "embed_path": "transformer.wte",
@@ -55,6 +57,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mlp",
         "ln1_path": "ln_1",
         "ln2_path": "ln_2",
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
     "pythia": {
         "embed_path": "gpt_neox.embed_in",
@@ -66,6 +69,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mlp",
         "ln1_path": "input_layernorm",
         "ln2_path": "post_attention_layernorm",
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
     "llama": {
         "embed_path": "model.embed_tokens",
@@ -77,6 +81,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mlp",
         "ln1_path": "input_layernorm",
         "ln2_path": "post_attention_layernorm",
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
     "bloom": {
         "embed_path": "transformer.word_embeddings",
@@ -88,6 +93,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mlp",
         "ln1_path": "input_layernorm",
         "ln2_path": "post_attention_layernorm",
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
     "opt": {
         "embed_path": "model.decoder.embed_tokens",
@@ -99,6 +105,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "fc2",          # OPT uses fc1/fc2 for MLP
         "ln1_path": "self_attn_layer_norm",
         "ln2_path": "final_layer_norm",
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
     "falcon": {
         "embed_path": "transformer.word_embeddings",
@@ -110,10 +117,12 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mlp",
         "ln1_path": "ln_attn",
         "ln2_path": "ln_mlp",
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
     "mamba": {
         # Mamba is an SSM – no attention or MLP sub-paths in the usual sense.
         # We expose the mixer (SSM block) and the residual output.
+        # Mamba layers return a plain tensor (not a tuple), so tuple_layer_components is empty.
         "embed_path": "backbone.embeddings",
         "layers_path": "backbone.layers",
         "lm_head_path": "lm_head",
@@ -123,6 +132,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mixer",             # same – Mamba has no separate MLP
         "ln1_path": "norm",
         "ln2_path": "norm",
+        "tuple_layer_components": [],
     },
     "mistral": {
         "embed_path": "model.embed_tokens",
@@ -134,6 +144,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mlp",
         "ln1_path": "input_layernorm",
         "ln2_path": "post_attention_layernorm",
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
     "phi": {
         "embed_path": "model.embed_tokens",
@@ -145,6 +156,7 @@ _ARCH_MAP: dict[str, dict] = {
         "mlp_path": "mlp",
         "ln1_path": "input_layernorm",
         "ln2_path": "post_attention_layernorm",  # Phi-3 uses resid_attn_dropout but ln works
+        "tuple_layer_components": _TRANSFORMER_TUPLE_OUTPUTS,
     },
 }
 
@@ -304,8 +316,8 @@ class BaseInterpreter:
         for part in parts:
             obj = getattr(obj, part)
 
-        # Residual / attention outputs are tuples – unwrap the first element
-        TUPLE_OUTPUTS = {"output", "attn.output", "self_attn.output", "attention.output"}
-        if component_path in TUPLE_OUTPUTS:
+        # Transformer layers return tuples for certain outputs; Mamba layers do not.
+        tuple_outputs = set(self._arch_desc.get("tuple_layer_components", []))
+        if component_path in tuple_outputs:
             return obj[0]
         return obj

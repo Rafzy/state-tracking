@@ -82,12 +82,9 @@ class ProbeInterpreter(BaseInterpreter):
                                 for sc in subcomponents:
                                     model_component = getattr(model_component, sc)
 
-                                TUPLE_OUTPUTS = {
-                                    "output", "attn.output",
-                                    "self_attn.output", "attention.output",
-                                }
+                                tuple_outputs = set(self._arch_desc.get("tuple_layer_components", []))
                                 key = f"{layer_idx}.{layer_component_path}"
-                                if layer_component_path in TUPLE_OUTPUTS:
+                                if layer_component_path in tuple_outputs:
                                     layer_reps[key] = (
                                         model_component[0][:, token_positions, :].save()
                                     )
