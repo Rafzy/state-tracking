@@ -162,17 +162,15 @@ class ModelWithLayerTargetsMixin:
                     shift_labels.view(-1),
                 )
 
-        if labels is not None:
-            final_logits = outputs.logits
-            shift_logits = final_logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss += loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-            )
+        final_logits = outputs.logits
+        shift_logits = final_logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        loss += loss_fct(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        )
 
-        outputs.loss = loss
-        return outputs
+        return loss, outputs
 
 
 # ---------------------------------------------------------------------------
