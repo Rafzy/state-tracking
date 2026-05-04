@@ -121,6 +121,8 @@ def parse_arguments():
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
     parser.add_argument("--disable_wandb", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--grad_accum_steps", type=int, default=1)
+    parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
     return parser.parse_args()
 
 
@@ -175,6 +177,8 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum_steps,
+        gradient_checkpointing=args.gradient_checkpointing,
         per_device_eval_batch_size=args.batch_size,
         save_steps=2000 if not args.save_all_checkpoints else args.save_all_checkpoints,
         save_strategy="steps",
