@@ -12,6 +12,7 @@ Supported model_type strings
   mamba     – Mamba SSM (state-spaces/mamba-*)
   mistral   – Mistral AI Mistral / Mixtral
   phi       – Microsoft Phi-2 / Phi-3
+  openelm   – Apple OpenELM (requires trust_remote_code)
 
 The helpers infer the type from the model name string when *model_type* is
 not provided explicitly, but callers that already know the type should pass
@@ -90,6 +91,7 @@ _LORA_TARGET_MODULES: dict[str, list[str]] = {
     "mamba":   ["in_proj", "out_proj", "x_proj", "dt_proj"],
     "mistral": ["q_proj", "v_proj"],
     "phi":     ["q_proj", "v_proj"],
+    "openelm": ["qkv_proj"],
 }
 
 
@@ -157,6 +159,12 @@ _ARCH_REGISTRY: dict[str, dict] = {
         "config_class": PhiConfig,
         "keywords": ["phi"],
     },
+    "openelm": {
+        "base_class": AutoModelForCausalLM,
+        "custom_class": None,
+        "config_class": AutoConfig,
+        "keywords": ["openelm"],
+    },
 }
 
 # Remove entries whose optional dependencies aren't installed
@@ -183,10 +191,13 @@ def infer_model_type(model_name: str) -> str:
 # Public helpers
 # ---------------------------------------------------------------------------
 
-def setup_tokenizer(model_name: str, state_tokens: dict, action_tokens: dict):
+def setup_tokenizer(model_name: str, state_tokens: dict, action_tokens: dict,
+                    trust_remote_code: bool = False):
     """Load and configure a tokenizer, adding task-specific special tokens."""
     print("Loading tokenizer")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, trust_remote_code=trust_remote_code
+    )
     tokenizer.pad_token = tokenizer.eos_token
 
     tokenizer.add_tokens(
@@ -210,6 +221,7 @@ def setup_model(
     use_custom_models: bool = False,
     layerwise_supervision_config=None,
     model_type: Optional[str] = None,
+    trust_remote_code: bool = False,
 ):
     """
     Load or initialise a causal-LM for any supported architecture.
@@ -261,6 +273,7 @@ def setup_model(
     # ── Load / create model ──────────────────────────────────────────────────
     common_from_pretrained_kwargs = dict(
         torch_dtype=dtype,
+        trust_remote_code=trust_remote_code,
     )
 
     if checkpoint_path:
@@ -280,7 +293,9 @@ def setup_model(
     elif no_pretrain:
         print("Initialising model with random weights")
         if config_class is AutoConfig:
-            config = AutoConfig.from_pretrained(model_name)
+            config = AutoConfig.from_pretrained(
+                model_name, trust_remote_code=trust_remote_code
+            )
         else:
             config = config_class.from_pretrained(model_name)
 

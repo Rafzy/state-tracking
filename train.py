@@ -127,6 +127,7 @@ def parse_arguments():
     parser.add_argument("--lora_r", type=int, default=16)
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--trust_remote_code", action="store_true", default=False)
     return parser.parse_args()
 
 
@@ -248,7 +249,8 @@ def main():
         with open(args.layerwise_supervision_type) as f:
             layerwise_supervision_config = json.load(f)
 
-    tokenizer = setup_tokenizer(args.model, state_tokens, action_tokens)
+    tokenizer = setup_tokenizer(args.model, state_tokens, action_tokens,
+                                trust_remote_code=args.trust_remote_code)
 
     model = setup_model(
         tokenizer=tokenizer,
@@ -259,6 +261,7 @@ def main():
         output_dir=args.output_dir,
         use_custom_models=True,
         layerwise_supervision_config=layerwise_supervision_config,
+        trust_remote_code=args.trust_remote_code,
     )
 
     if args.use_lora:
