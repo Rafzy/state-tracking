@@ -22,7 +22,7 @@ from utils.data_collators import (
     DataCollatorForLanguageModelingWithNextTokenSupervision,
 )
 from utils.data_loaders import ChunkedDataset
-from utils.model_utils import setup_model, setup_tokenizer
+from utils.model_utils import apply_lora, setup_model, setup_tokenizer
 
 # ── Supported model name list (for argparse choices) ──────────────────────
 _GPT2_MODELS = [
@@ -123,6 +123,10 @@ def parse_arguments():
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--grad_accum_steps", type=int, default=1)
     parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
+    parser.add_argument("--use_lora", action="store_true", default=False)
+    parser.add_argument("--lora_r", type=int, default=16)
+    parser.add_argument("--lora_alpha", type=int, default=32)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
     return parser.parse_args()
 
 
@@ -256,6 +260,15 @@ def main():
         use_custom_models=True,
         layerwise_supervision_config=layerwise_supervision_config,
     )
+
+    if args.use_lora:
+        model = apply_lora(
+            model,
+            model_name=args.model,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+        )
 
     data_collator = setup_data_collator(
         args, tokenizer, state_tokens, parity, layerwise_supervision_config

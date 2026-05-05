@@ -79,6 +79,19 @@ from utils.models import (
     PhiModelWithLayerTargets,
 )
 
+# LoRA target attention modules per architecture
+_LORA_TARGET_MODULES: dict[str, list[str]] = {
+    "gpt2":    ["c_attn"],
+    "pythia":  ["query_key_value"],
+    "llama":   ["q_proj", "v_proj"],
+    "bloom":   ["query_key_value"],
+    "opt":     ["q_proj", "v_proj"],
+    "falcon":  ["query_key_value"],
+    "mamba":   ["in_proj", "out_proj", "x_proj", "dt_proj"],
+    "mistral": ["q_proj", "v_proj"],
+    "phi":     ["q_proj", "v_proj"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Architecture registry
@@ -305,4 +318,47 @@ def setup_model(
         model.module.gradient_checkpointing_enable()
 
     model = model.to("cuda")
+    return model
+
+
+def apply_lora(
+    model,
+    model_name: str,
+    r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    model_type: Optional[str] = None,
+):
+    """Wrap *model* with LoRA adapters using the peft library.
+
+    Only the LoRA parameters (and any custom layer_classifiers) are left
+    trainable; all base-model weights are frozen.
+    """
+    try:
+        from peft import LoraConfig, TaskType, get_peft_model
+    except ImportError:
+        raise ImportError("peft is required for LoRA. Install with: pip install peft")
+
+    if model_type is None:
+        model_type = infer_model_type(model_name)
+
+    target_modules = _LORA_TARGET_MODULES.get(model_type, ["q_proj", "v_proj"])
+
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=target_modules,
+    )
+
+    model = get_peft_model(model, lora_config)
+
+    # Re-enable gradients for any custom classification heads added by
+    # ModelWithLayerTargetsMixin so layerwise supervision still trains.
+    for name, param in model.named_parameters():
+        if "layer_classifiers" in name:
+            param.requires_grad = True
+
+    model.print_trainable_parameters()
     return model
