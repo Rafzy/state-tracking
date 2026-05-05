@@ -19,7 +19,7 @@ pip install -r requirements.txt
 ```
 
 **Key dependencies** (pinned in `requirements.txt`):
-- `transformers==4.49.0` — model loading and tokenization
+- `transformers==4.51.3` — model loading and tokenization (4.51+ required for Qwen3 classes)
 - `nnsight==0.4.3` — activation tracing and patching
 - `scikit-learn==1.6.1` — logistic regression for probing
 - `accelerate==1.4.0` — distributed/mixed precision training
@@ -160,25 +160,56 @@ bash bash_scripts/run_intervention.sh \
 
 ## Adding a New Model (Model Expansion Goal)
 
-The codebase is designed to support new model families with minimal changes. The critical paths are:
+Currently supported families: `gpt2`, `pythia`, `qwen3`, `llama`. Adding another is one registry entry plus one boilerplate class — no more if/elif chains scattered across files. The architecture metadata lives in `_FAMILY_REGISTRY` in `utils/model_utils.py`, and both training and interpret pipelines look it up at runtime.
 
-### 1. `utils/model_utils.py` — `load_model_and_tokenizer()`
-This function handles model-specific loading. When adding a new model family:
-- Add a branch for the new `model_type` string (currently: `"gpt2"`, `"pythia"`, `"llama"`)
-- Handle tokenizer initialization (pad token, BOS/EOS behavior)
-- Call `expand_tokenizer_and_embeddings()` to add custom state/action tokens
+### 1. `utils/models.py` — Add a `WithLayerTargets` class
 
-### 2. `utils/models.py` — Custom model classes
-Each supported model family has a custom class (e.g., `GPT2ModelWithLayerTargets`) that wraps the HuggingFace model with per-layer supervision heads. To add a new model:
-- Subclass `PreTrainedModel` or copy an existing class
-- Wire up intermediate layer outputs to classifier heads
-- Ensure `forward()` returns a combined loss across layers
+Mirror an existing family (the Llama, Qwen3, and GPT-2 classes are nearly byte-for-byte identical):
 
-### 3. `interpret/interpreters/base_interpreter.py` — Representation extraction
-Uses `nnsight` to hook into model internals. Model-specific layer naming must match the new architecture (e.g., `model.transformer.h[i]` for GPT-2 vs. `model.gpt_neox.layers[i]` for Pythia).
+```python
+class FooModelWithLayerTargets(ModelWithLayerTargetsMixin, FooForCausalLM):
+    """Foo model with layer-wise supervision."""
+    def __init__(self, config, layerwise_supervision_config=None):
+        super().__init__(config)
+        self.init_layer_targets(config, layerwise_supervision_config)
+    def forward(self, *args, **kwargs):
+        return self.forward_with_layer_targets(*args, **kwargs)
+```
 
-### 4. `bash_scripts/` — `--model_type` argument
-All analysis scripts accept `--model_type`. Add the new model type as a valid option in the interpreter dispatch logic (`interpret/main.py`).
+### 2. `utils/model_utils.py` — Append a `_FAMILY_REGISTRY` entry
+
+One dict with 11 fields covers training dispatch, interpret-side architecture paths, and activation-patching submodule names:
+
+```python
+{
+    "family": "foo",                                              # CLI --model_type value
+    "name_re": re.compile(r"^foo-org/Foo-", re.IGNORECASE),       # HF name regex (training)
+    "config_class": FooConfig,
+    "model_class": FooForCausalLM,
+    "custom_class": FooModelWithLayerTargets,
+    "inner_model_path": "model",                                  # under nnsight LanguageModel
+    "layers_path":      "model.layers",
+    "embeddings_path":  "model.embed_tokens",
+    "lm_head_path":     "lm_head",
+    "n_layers_attr":    "num_hidden_layers",                      # attr on config
+    "submodules": {"ln1": "input_layernorm", "attn": "self_attn",
+                   "ln2": "post_attention_layernorm", "mlp": "mlp"},
+}
+```
+
+The `family` string is what users pass via `--model_type`; the `name_re` is what `train.py` matches against `--model`. Both are strict: `_resolve_family` raises `ValueError` if no name regex matches, so silent mis-routing is impossible.
+
+### 3. `train.py` and `interpret/main.py` — Add to `choices` lists
+
+Both files validate at parse time. Add the new HF name(s) to `train.py`'s `--model choices=[]` and the new short string to `interpret/main.py`'s `--model_type choices=[]`. If you forget, argparse will reject the CLI value with a clear error.
+
+### What you do NOT need to edit anymore
+
+- `setup_model()` in `utils/model_utils.py` — registry-driven via `_resolve_family`.
+- `setup_model()` in `interpret/interpreters/base_interpreter.py` — registry-driven via `get_family_by_type` + `attrgetter`.
+- `get_hs_logits()` in `interpret/interpreters/activation_patching_interpreter.py` — registry-driven via the `submodules` field.
+
+If a future transformers release renames internal HF attributes (e.g., `model.layers` → `model.transformer.layers`), only the affected registry entry needs updating — every dispatch site reads from there.
 
 ---
 
@@ -188,7 +219,7 @@ All analysis scripts accept `--model_type`. Add the new model type as a valid op
 Streams large JSON data files in chunks to avoid loading everything into memory. Uses binary search for O(log n) index mapping across chunks. Frees memory when switching chunks.
 
 ### Token Expansion (`utils/model_utils.py`)
-Custom tokens are added for every possible state and action in the permutation group (6 for S3, 120 for S5), plus space-prefixed variants. Embedding matrices are resized accordingly.
+`setup_tokenizer()` adds custom tokens for every possible state and action in the permutation group (6 for S3, 120 for S5), plus space-prefixed variants. `setup_model()` then calls `model.resize_token_embeddings(len(tokenizer))` to grow the embedding matrix (HF handles tied input/output embeddings transparently — relevant for Qwen3-0.6B).
 
 ### Metadata Extraction (`interpret/metadata_processors.py`)
 Converts raw token sequences into per-token DataFrames with columns for current state, current parity, action taken, etc. These labels are used as probe targets.
@@ -197,7 +228,7 @@ Converts raw token sequences into per-token DataFrames with columns for current 
 Lengthwise probe results are cached to `probe_results/` as numpy arrays. Subsequent runs load from cache if the file exists — delete cache files to force recomputation.
 
 ### nnsight Tracing
-Both probing and activation patching use `nnsight` to extract hidden states. The layer access pattern is architecture-specific and must be updated when adding new models.
+Both probing and activation patching use `nnsight` to extract hidden states. The architecture-specific layer access pattern (e.g., `model.transformer.h` vs `model.gpt_neox.layers` vs `model.model.layers`) is resolved from `_FAMILY_REGISTRY` via `operator.attrgetter` — no per-family branches in the interpreter code.
 
 ---
 
