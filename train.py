@@ -178,7 +178,6 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
-        overwrite_output_dir=True,
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
