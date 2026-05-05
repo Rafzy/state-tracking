@@ -176,7 +176,7 @@ def process_model_outputs(outputs, batch_data, action_to_nl, tokenizer, device):
     logits = logits + (1 - mask) * -1e9  # set non-action tokens to -inf
     
     pred_tokens = logits.argmax(dim=-1).cpu()
-    if (batch_data['input_ids'][:,0] == tokenizer.bos_token_id).all():
+    if tokenizer.bos_token_id is not None and (batch_data['input_ids'][:,0] == tokenizer.bos_token_id).all():
         pred_tokens = pred_tokens[:,1:]
     
     output_probs = torch.softmax(outputs.logits, dim=-1).cpu()
