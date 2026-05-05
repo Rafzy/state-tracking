@@ -369,10 +369,11 @@ def apply_lora(
 
     model = get_peft_model(model, lora_config)
 
-    # Re-enable gradients for any custom classification heads added by
-    # ModelWithLayerTargetsMixin so layerwise supervision still trains.
+    # Re-enable gradients for newly added token embeddings (frozen by LoRA but
+    # randomly initialised — the model can't learn task tokens without this)
+    # and any custom classification heads from ModelWithLayerTargetsMixin.
     for name, param in model.named_parameters():
-        if "layer_classifiers" in name:
+        if any(kw in name for kw in ("layer_classifiers", "embed", "lm_head")):
             param.requires_grad = True
 
     model.print_trainable_parameters()
