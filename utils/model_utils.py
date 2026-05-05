@@ -13,6 +13,7 @@ from transformers import (
     Qwen3Config,
 )
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
+import re
 import torch
 import os
 
@@ -23,6 +24,51 @@ from utils.models import (
     PythiaModelWithLayerTargets,
     Qwen3ModelWithLayerTargets,
 )
+
+
+_FAMILY_REGISTRY = [
+    {
+        "family": "gpt2",
+        "name_re": re.compile(r"^(distilgpt2|gpt2(-medium|-large|-xl)?)$", re.IGNORECASE),
+        "config_class": GPT2Config,
+        "model_class": GPT2LMHeadModel,
+        "custom_class": GPT2ModelWithLayerTargets,
+    },
+    {
+        "family": "pythia",
+        "name_re": re.compile(r"^EleutherAI/pythia-", re.IGNORECASE),
+        "config_class": AutoConfig,
+        "model_class": GPTNeoXForCausalLM,
+        "custom_class": PythiaModelWithLayerTargets,
+    },
+    {
+        "family": "qwen3",
+        "name_re": re.compile(r"^Qwen/Qwen3-", re.IGNORECASE),
+        "config_class": Qwen3Config,
+        "model_class": Qwen3ForCausalLM,
+        "custom_class": Qwen3ModelWithLayerTargets,
+    },
+    {
+        "family": "llama",
+        "name_re": re.compile(r"^(meta-llama/|llama-)", re.IGNORECASE),
+        "config_class": LlamaConfig,
+        "model_class": LlamaForCausalLM,
+        "custom_class": LlamaModelWithLayerTargets,
+    },
+]
+
+
+def _resolve_family(model_name: str) -> dict:
+    """Look up the family spec for a given HF model name. Raises ValueError if no family matches."""
+    for spec in _FAMILY_REGISTRY:
+        if spec["name_re"].search(model_name):
+            return spec
+    families = ", ".join(s["family"] for s in _FAMILY_REGISTRY)
+    raise ValueError(
+        f"No model family matches {model_name!r}. "
+        f"Supported families: {families}. "
+        f"To add a new family, append an entry to _FAMILY_REGISTRY in utils/model_utils.py."
+    )
 
 
 def setup_tokenizer(model_name, state_tokens, action_tokens):
@@ -71,19 +117,9 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
     print("Loading model")
     
     if model_name:
-        # Determine model configuration and class
-        if "gpt" in model_name.lower():
-            config_class = GPT2Config
-            model_class = GPT2ModelWithLayerTargets if use_custom_models else GPT2LMHeadModel
-        elif "pythia" in model_name.lower():
-            config_class = AutoConfig
-            model_class = PythiaModelWithLayerTargets if use_custom_models else GPTNeoXForCausalLM
-        elif "qwen" in model_name.lower():
-            config_class = Qwen3Config
-            model_class = Qwen3ModelWithLayerTargets if use_custom_models else Qwen3ForCausalLM
-        else:
-            config_class = LlamaConfig
-            model_class = LlamaModelWithLayerTargets if use_custom_models else LlamaForCausalLM
+        spec = _resolve_family(model_name)
+        config_class = spec["config_class"]
+        model_class = spec["custom_class"] if use_custom_models else spec["model_class"]
     else:
         model_class = AutoModelForCausalLM
         config_class = AutoConfig
