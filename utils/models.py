@@ -1,6 +1,6 @@
 from torch import nn
 from torch.nn import CrossEntropyLoss
-from transformers import GPT2LMHeadModel, LlamaForCausalLM, GPTNeoXForCausalLM
+from transformers import GPT2LMHeadModel, LlamaForCausalLM, GPTNeoXForCausalLM, Qwen3ForCausalLM
 
 
 class GPT2MaskedLMHeadModel(GPT2LMHeadModel):
@@ -125,10 +125,21 @@ class LlamaModelWithLayerTargets(ModelWithLayerTargetsMixin, LlamaForCausalLM):
 
 class PythiaModelWithLayerTargets(ModelWithLayerTargetsMixin, GPTNeoXForCausalLM):
     """Pythia model with layer-wise supervision."""
-    
+
     def __init__(self, config, layerwise_supervision_config=None):
         super().__init__(config)
         self.init_layer_targets(config, layerwise_supervision_config)
-    
+
+    def forward(self, *args, **kwargs):
+        return self.forward_with_layer_targets(*args, **kwargs)
+
+
+class Qwen3ModelWithLayerTargets(ModelWithLayerTargetsMixin, Qwen3ForCausalLM):
+    """Qwen3 model with layer-wise supervision."""
+
+    def __init__(self, config, layerwise_supervision_config=None):
+        super().__init__(config)
+        self.init_layer_targets(config, layerwise_supervision_config)
+
     def forward(self, *args, **kwargs):
         return self.forward_with_layer_targets(*args, **kwargs)

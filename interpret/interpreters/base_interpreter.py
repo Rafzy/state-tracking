@@ -1,11 +1,12 @@
 import torch
 import numpy as np
 from transformers import (
-    GPT2Tokenizer, 
+    GPT2Tokenizer,
     AutoModel,
     GPT2LMHeadModel,
     LlamaForCausalLM,
-    AutoTokenizer
+    Qwen3ForCausalLM,
+    AutoTokenizer,
 )
 from nnsight import LanguageModel
 from torch.nn import LogSoftmax
@@ -98,6 +99,14 @@ class BaseInterpreter:
             self.embeddings = self.model.gpt_neox.embed_in
             self.model_layers = self.model.gpt_neox.layers
             self.lm_head = self.model.embed_out
+        elif self.model_type == "qwen":
+            self.model_hf = Qwen3ForCausalLM.from_pretrained(self.checkpoint_dir).cuda(0)
+            self.n_layers = self.model.config.num_hidden_layers
+            self.layer_names = [["output"] for _ in range(self.n_layers)]
+            self.inner_model = self.model.model
+            self.embeddings = self.model.model.embed_tokens
+            self.model_layers = self.model.model.layers
+            self.lm_head = self.model.lm_head
             
         self.model_hf.resize_token_embeddings(len(self.tokenizer))
         self.action_to_token_ids = {

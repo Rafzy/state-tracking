@@ -96,6 +96,13 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                                 "ln2": self.model_layers[layer_idx].post_attention_layernorm.output[0].cpu().save(),
                                 "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
                             }
+                        elif self.model_type == "qwen":
+                            hidden_states[layer_idx] = {
+                                "ln1": self.model_layers[layer_idx].input_layernorm.output[0].cpu().save(),
+                                "attn": self.model_layers[layer_idx].self_attn.output[0].cpu().save(),
+                                "ln2": self.model_layers[layer_idx].post_attention_layernorm.output[0].cpu().save(),
+                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
+                            }
                     
                     # Get specific components if requested
                     if layer_components is not None:

@@ -5,10 +5,12 @@ from transformers import (
     AutoTokenizer,
     AutoConfig,
     AutoModelForCausalLM,
-    GPT2LMHeadModel, 
+    GPT2LMHeadModel,
     GPT2Config,
     LlamaForCausalLM,
-    LlamaConfig
+    LlamaConfig,
+    Qwen3ForCausalLM,
+    Qwen3Config,
 )
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
 import torch
@@ -18,7 +20,8 @@ import os
 from utils.models import (
     GPT2ModelWithLayerTargets,
     LlamaModelWithLayerTargets,
-    PythiaModelWithLayerTargets
+    PythiaModelWithLayerTargets,
+    Qwen3ModelWithLayerTargets,
 )
 
 
@@ -75,6 +78,9 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
         elif "pythia" in model_name.lower():
             config_class = AutoConfig
             model_class = PythiaModelWithLayerTargets if use_custom_models else GPTNeoXForCausalLM
+        elif "qwen" in model_name.lower():
+            config_class = Qwen3Config
+            model_class = Qwen3ModelWithLayerTargets if use_custom_models else Qwen3ForCausalLM
         else:
             config_class = LlamaConfig
             model_class = LlamaModelWithLayerTargets if use_custom_models else LlamaForCausalLM
