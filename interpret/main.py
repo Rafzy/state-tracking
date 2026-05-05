@@ -20,7 +20,7 @@ def parse_arguments() -> argparse.Namespace:
     
     # Model configuration
     parser.add_argument("--model_type", type=str, default="gpt2",
-                        choices=["llama", "gpt2", "pythia", "qwen"],
+                        choices=["llama", "gpt2", "pythia", "qwen3"],
                         help="Type of model to interpret")
     parser.add_argument("--checkpoint_dir", type=str, 
                         default="checkpoint_fromscratch_llama3_S3_state/checkpoint-7032",

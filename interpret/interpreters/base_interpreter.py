@@ -1,17 +1,11 @@
 import torch
 import numpy as np
-from transformers import (
-    GPT2Tokenizer,
-    AutoModel,
-    GPT2LMHeadModel,
-    LlamaForCausalLM,
-    Qwen3ForCausalLM,
-    AutoTokenizer,
-)
+from operator import attrgetter
+from transformers import AutoTokenizer
 from nnsight import LanguageModel
 from torch.nn import LogSoftmax
 from permutation_task import compute_parity, PermutationTask
-import torch
+from utils.model_utils import get_family_by_type
 from interpret.visualization_manager import VisualizationManager
 import random
 import os
@@ -62,52 +56,26 @@ class BaseInterpreter:
 
     def setup_model(self):
         """Initialize model and tokenizer"""
+        self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_dir)
         if self.model_type == "gpt2":
-            self.tokenizer = GPT2Tokenizer.from_pretrained(self.checkpoint_dir)
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        else:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_dir)
 
-        # Add special tokens
-        self.tokenizer.add_tokens(list(self.action_to_nl.values()) + [f" {action}" for action in self.action_to_nl.values()])
+        self.tokenizer.add_tokens(
+            list(self.action_to_nl.values()) + [f" {action}" for action in self.action_to_nl.values()]
+        )
 
-        # Initialize models
         self.model = LanguageModel(self.checkpoint_dir, device_map=self.device, dispatch=True)
         self.model.resize_token_embeddings(len(self.tokenizer))
 
-        if self.model_type == "gpt2":
-            self.model_hf = GPT2LMHeadModel.from_pretrained(self.checkpoint_dir).cuda(0)
-            self.n_layers = self.model.config.n_layer
-            self.layer_names = [["output"] for _ in range(self.n_layers)]
-            self.inner_model = self.model.transformer
-            self.embeddings = self.model.transformer.wte
-            self.model_layers = self.model.transformer.h
-            self.lm_head = self.model.lm_head
-        elif self.model_type == "llama":
-            self.model_hf = LlamaForCausalLM.from_pretrained(self.checkpoint_dir).cuda(0)
-            self.n_layers = self.model.config.num_hidden_layers
-            self.layer_names = [["output"] for _ in range(self.n_layers)]
-            self.inner_model = self.model.model
-            self.embeddings = self.model.model.embed_tokens
-            self.model_layers = self.model.model.layers
-            self.lm_head = self.model.lm_head
-        elif self.model_type == "pythia":
-            self.model_hf = AutoModel.from_pretrained(self.checkpoint_dir).cuda(0)
-            self.n_layers = self.model.config.num_hidden_layers
-            self.layer_names = [["output"] for _ in range(self.n_layers)]
-            self.inner_model = self.model.gpt_neox
-            self.embeddings = self.model.gpt_neox.embed_in
-            self.model_layers = self.model.gpt_neox.layers
-            self.lm_head = self.model.embed_out
-        elif self.model_type == "qwen":
-            self.model_hf = Qwen3ForCausalLM.from_pretrained(self.checkpoint_dir).cuda(0)
-            self.n_layers = self.model.config.num_hidden_layers
-            self.layer_names = [["output"] for _ in range(self.n_layers)]
-            self.inner_model = self.model.model
-            self.embeddings = self.model.model.embed_tokens
-            self.model_layers = self.model.model.layers
-            self.lm_head = self.model.lm_head
-            
+        spec = get_family_by_type(self.model_type)
+        self.model_hf     = spec["model_class"].from_pretrained(self.checkpoint_dir).cuda(0)
+        self.n_layers     = getattr(self.model.config, spec["n_layers_attr"])
+        self.layer_names  = [["output"] for _ in range(self.n_layers)]
+        self.inner_model  = attrgetter(spec["inner_model_path"])(self.model)
+        self.embeddings   = attrgetter(spec["embeddings_path"])(self.model)
+        self.model_layers = attrgetter(spec["layers_path"])(self.model)
+        self.lm_head      = attrgetter(spec["lm_head_path"])(self.model)
+
         self.model_hf.resize_token_embeddings(len(self.tokenizer))
         self.action_to_token_ids = {
             action: self.tokenizer.convert_tokens_to_ids(" "+action)

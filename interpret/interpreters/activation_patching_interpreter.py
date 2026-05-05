@@ -1,9 +1,11 @@
 import numpy as np
 import random
+from operator import attrgetter
 from tqdm import tqdm
 from typing import Set, Dict, List, Tuple, Any
 from permutation_task import compute_parity
 from interpret.interpreters.base_interpreter import BaseInterpreter
+from utils.model_utils import get_family_by_type
 import torch
 import os
 
@@ -64,45 +66,24 @@ class ActivationPatchingInterpreter(BaseInterpreter):
         layer_components=None,
     ):
         """Get hidden states and logits for a given prompt"""
+        spec = get_family_by_type(self.model_type)
+        n_layers = getattr(self.model.config, spec["n_layers_attr"])
+        submods = spec["submodules"]
         hidden_states = {}
-        n_layers = self.model.config.num_hidden_layers if self.model_type != "gpt2" else self.model.config.n_layer
-        
+
         with torch.no_grad():
             with self.model.trace() as tracer:
                 with tracer.invoke(prompt) as invoker:
                     # Get embeddings
                     hidden_states = {-1: {"embed": self.embeddings.output[0].cpu().save()}}
-                        
+
                     # Get hidden states for all layers
                     for layer_idx in range(n_layers):
-                        if self.model_type == "gpt2":
-                            hidden_states[layer_idx] = {
-                                "ln1": self.model_layers[layer_idx].ln_1.output[0].cpu().save(),
-                                "attn": self.model_layers[layer_idx].attn.output[0].cpu().save(),
-                                "ln2": self.model_layers[layer_idx].ln_2.output[0].cpu().save(),
-                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
-                            }
-                        elif self.model_type == "llama":
-                            hidden_states[layer_idx] = {
-                                "ln1": self.model_layers[layer_idx].input_layernorm.output[0].cpu().save(),
-                                "attn": self.model_layers[layer_idx].self_attn.output[0].cpu().save(),
-                                "ln2": self.model_layers[layer_idx].post_attention_layernorm.output[0].cpu().save(),
-                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
-                            }
-                        elif self.model_type == "pythia":
-                            hidden_states[layer_idx] = {
-                                "ln1": self.model_layers[layer_idx].input_layernorm.output[0].cpu().save(),
-                                "attn": self.model_layers[layer_idx].attention.output[0].cpu().save(),
-                                "ln2": self.model_layers[layer_idx].post_attention_layernorm.output[0].cpu().save(),
-                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
-                            }
-                        elif self.model_type == "qwen":
-                            hidden_states[layer_idx] = {
-                                "ln1": self.model_layers[layer_idx].input_layernorm.output[0].cpu().save(),
-                                "attn": self.model_layers[layer_idx].self_attn.output[0].cpu().save(),
-                                "ln2": self.model_layers[layer_idx].post_attention_layernorm.output[0].cpu().save(),
-                                "mlp": self.model_layers[layer_idx].mlp.output[0].cpu().save(),
-                            }
+                        layer = self.model_layers[layer_idx]
+                        hidden_states[layer_idx] = {
+                            comp: attrgetter(attr)(layer).output[0].cpu().save()
+                            for comp, attr in submods.items()
+                        }
                     
                     # Get specific components if requested
                     if layer_components is not None:

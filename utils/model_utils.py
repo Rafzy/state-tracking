@@ -33,6 +33,13 @@ _FAMILY_REGISTRY = [
         "config_class": GPT2Config,
         "model_class": GPT2LMHeadModel,
         "custom_class": GPT2ModelWithLayerTargets,
+        "inner_model_path": "transformer",
+        "layers_path":      "transformer.h",
+        "embeddings_path":  "transformer.wte",
+        "lm_head_path":     "lm_head",
+        "n_layers_attr":    "n_layer",
+        "submodules": {"ln1": "ln_1", "attn": "attn",
+                       "ln2": "ln_2", "mlp": "mlp"},
     },
     {
         "family": "pythia",
@@ -40,6 +47,13 @@ _FAMILY_REGISTRY = [
         "config_class": AutoConfig,
         "model_class": GPTNeoXForCausalLM,
         "custom_class": PythiaModelWithLayerTargets,
+        "inner_model_path": "gpt_neox",
+        "layers_path":      "gpt_neox.layers",
+        "embeddings_path":  "gpt_neox.embed_in",
+        "lm_head_path":     "embed_out",
+        "n_layers_attr":    "num_hidden_layers",
+        "submodules": {"ln1": "input_layernorm", "attn": "attention",
+                       "ln2": "post_attention_layernorm", "mlp": "mlp"},
     },
     {
         "family": "qwen3",
@@ -47,6 +61,13 @@ _FAMILY_REGISTRY = [
         "config_class": Qwen3Config,
         "model_class": Qwen3ForCausalLM,
         "custom_class": Qwen3ModelWithLayerTargets,
+        "inner_model_path": "model",
+        "layers_path":      "model.layers",
+        "embeddings_path":  "model.embed_tokens",
+        "lm_head_path":     "lm_head",
+        "n_layers_attr":    "num_hidden_layers",
+        "submodules": {"ln1": "input_layernorm", "attn": "self_attn",
+                       "ln2": "post_attention_layernorm", "mlp": "mlp"},
     },
     {
         "family": "llama",
@@ -54,6 +75,13 @@ _FAMILY_REGISTRY = [
         "config_class": LlamaConfig,
         "model_class": LlamaForCausalLM,
         "custom_class": LlamaModelWithLayerTargets,
+        "inner_model_path": "model",
+        "layers_path":      "model.layers",
+        "embeddings_path":  "model.embed_tokens",
+        "lm_head_path":     "lm_head",
+        "n_layers_attr":    "num_hidden_layers",
+        "submodules": {"ln1": "input_layernorm", "attn": "self_attn",
+                       "ln2": "post_attention_layernorm", "mlp": "mlp"},
     },
 ]
 
@@ -68,6 +96,18 @@ def _resolve_family(model_name: str) -> dict:
         f"No model family matches {model_name!r}. "
         f"Supported families: {families}. "
         f"To add a new family, append an entry to _FAMILY_REGISTRY in utils/model_utils.py."
+    )
+
+
+def get_family_by_type(model_type: str) -> dict:
+    """Look up registry entry by short family name (matches --model_type)."""
+    for spec in _FAMILY_REGISTRY:
+        if spec["family"] == model_type:
+            return spec
+    families = ", ".join(s["family"] for s in _FAMILY_REGISTRY)
+    raise ValueError(
+        f"Unknown model_type {model_type!r}. Supported: {families}. "
+        f"Add an entry to _FAMILY_REGISTRY in utils/model_utils.py to support a new family."
     )
 
 
