@@ -218,9 +218,15 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                                 tgt = self._get_layer_component(layer_idx, component)
 
                             if patching_mode == "deletion":
-                                tgt[token_range] = 0
+                                if layer_idx == -1:
+                                    tgt[token_range] = 0
+                                else:
+                                    tgt[:, token_range, :] = 0
                             else:
-                                tgt[token_range] = replace_val[token_range]
+                                if layer_idx == -1:
+                                    tgt[token_range] = replace_val[token_range]
+                                else:
+                                    tgt[:, token_range, :] = replace_val[:, token_range, :]
 
                             patched_logits_raw = self.sf(self.lm_head.output)
                             patched_logits = {
