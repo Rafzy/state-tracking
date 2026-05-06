@@ -52,6 +52,19 @@ def parse_arguments():
     parser.add_argument("--data_determinism", action="store_true", default=False)
     parser.add_argument("--full_determinism", action="store_true", default=False)
     parser.add_argument("--early_stopping", action="store_true", default=False)
+    parser.add_argument(
+        "--lr_scheduler_type", type=str, default="linear",
+        choices=["linear", "reduce_lr_on_plateau"],
+        help="LR scheduler. 'linear' is the HF default; 'reduce_lr_on_plateau' decays LR when eval_loss plateaus.",
+    )
+    parser.add_argument(
+        "--lr_scheduler_patience", type=int, default=2,
+        help="ReduceLROnPlateau patience, in eval-step units. Ignored unless --lr_scheduler_type=reduce_lr_on_plateau.",
+    )
+    parser.add_argument(
+        "--lr_scheduler_factor", type=float, default=0.5,
+        help="ReduceLROnPlateau decay factor. Ignored unless --lr_scheduler_type=reduce_lr_on_plateau.",
+    )
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
     parser.add_argument("--disable_wandb", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
@@ -126,6 +139,20 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
     wandb.init(project="state-tracking", name=args.output_dir)
+
+    use_plateau = args.lr_scheduler_type == "reduce_lr_on_plateau"
+    # Both early stopping and ReduceLROnPlateau need step-cadence eval_loss to react to.
+    need_step_eval = args.early_stopping or use_plateau
+    # HF Trainer requires metric_for_best_model when lr_scheduler_type="reduce_lr_on_plateau".
+    need_metric = args.early_stopping or use_plateau
+
+    scheduler_kwargs = {}
+    if use_plateau:
+        scheduler_kwargs = {
+            "factor": args.lr_scheduler_factor,
+            "patience": args.lr_scheduler_patience,
+        }
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         # overwrite_output_dir=True,
@@ -138,10 +165,10 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         save_total_limit=None if args.save_all_checkpoints else 1,
         logging_dir='./logs',
         logging_steps=10,
-        eval_strategy="steps" if args.early_stopping else "epoch",
-        eval_steps=2000 if args.early_stopping else None,
+        eval_strategy="steps" if need_step_eval else "epoch",
+        eval_steps=2000 if need_step_eval else None,
         batch_eval_metrics=True,
-        eval_on_start=True if args.early_stopping else False,
+        eval_on_start=True if need_step_eval else False,
         remove_unused_columns=False,
         report_to="none" if args.disable_wandb else "wandb",
         dataloader_num_workers=1,
@@ -150,12 +177,13 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         seed=args.seed,
         data_seed=args.seed,
         full_determinism=args.full_determinism,
-        metric_for_best_model="eval_loss" if args.early_stopping else None,
-        greater_is_better=False if args.early_stopping else True,
+        metric_for_best_model="eval_loss" if need_metric else None,
+        greater_is_better=False if need_metric else True,
         load_best_model_at_end=True if args.early_stopping else False,
-        learning_rate=1e-5
+        lr_scheduler_type=args.lr_scheduler_type,
+        lr_scheduler_kwargs=scheduler_kwargs,
     )
-    
+
     trainer = Trainer(
         model=model,
         processing_class=tokenizer,
@@ -164,8 +192,10 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
     )
-    
+
     if args.early_stopping:
+        # Keep early_stopping_patience > lr_scheduler_patience so the scheduler gets a
+        # chance to reduce the LR before training is killed on a plateau.
         trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=3))
     
     return trainer
