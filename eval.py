@@ -143,7 +143,8 @@ def prepare_batch_data(batch_stories, batch_labels, tokenizer, device, max_len):
     labels = tokenizer(
         batch_labels, return_tensors='pt', padding=True, truncation=True, max_length=max_len+1,
     )['input_ids']
-    
+    labels = labels[:, :input_ids.shape[1]]
+
     return {
         'input_ids': input_ids,
         'attention_mask': attention_mask,
@@ -211,6 +212,7 @@ def process_predictions(batch_pred_tokens, batch_labels, batch_stories, task, to
         # Get the predicted and ground truth tokens
         pred_token_ids = batch_pred_tokens[i]
         label_tokens = batch_labels[i].strip().split()
+        label_tokens = label_tokens[:len(pred_token_ids)]
         assert len(pred_token_ids) == len(label_tokens)
         
         for seq_len in range(len(pred_token_ids)):
