@@ -57,7 +57,7 @@ class BaseInterpreter:
     def setup_model(self):
         """Initialize model and tokenizer"""
         self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_dir)
-        if self.model_type == "gpt2":
+        if self.model_type in ("gpt2", "rwkv"):
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.tokenizer.add_tokens(
@@ -69,6 +69,11 @@ class BaseInterpreter:
 
         spec = get_family_by_type(self.model_type)
         self.model_hf     = spec["model_class"].from_pretrained(self.checkpoint_dir).cuda(0)
+        # Disable RWKV's inference-mode weight rescaling so layer-wise hidden states
+        # are comparable across layers (avoids 0.5x rescale every config.rescale_every).
+        if self.model_type == "rwkv":
+            self.model.config.rescale_every = 0
+            self.model_hf.config.rescale_every = 0
         self.n_layers     = getattr(self.model.config, spec["n_layers_attr"])
         self.layer_names  = [["output"] for _ in range(self.n_layers)]
         self.inner_model  = attrgetter(spec["inner_model_path"])(self.model)

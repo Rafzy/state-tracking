@@ -11,6 +11,8 @@ from transformers import (
     LlamaConfig,
     Qwen3ForCausalLM,
     Qwen3Config,
+    RwkvForCausalLM,
+    RwkvConfig,
 )
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
 import re
@@ -23,6 +25,7 @@ from utils.models import (
     LlamaModelWithLayerTargets,
     PythiaModelWithLayerTargets,
     Qwen3ModelWithLayerTargets,
+    RwkvModelWithLayerTargets,
 )
 
 
@@ -82,6 +85,20 @@ _FAMILY_REGISTRY = [
         "n_layers_attr":    "num_hidden_layers",
         "submodules": {"ln1": "input_layernorm", "attn": "self_attn",
                        "ln2": "post_attention_layernorm", "mlp": "mlp"},
+    },
+    {
+        "family": "rwkv",
+        "name_re": re.compile(r"^RWKV/rwkv-4-", re.IGNORECASE),
+        "config_class": RwkvConfig,
+        "model_class": RwkvForCausalLM,
+        "custom_class": RwkvModelWithLayerTargets,
+        "inner_model_path": "rwkv",
+        "layers_path":      "rwkv.blocks",
+        "embeddings_path":  "rwkv.embeddings",
+        "lm_head_path":     "head",
+        "n_layers_attr":    "num_hidden_layers",
+        "submodules": {"ln1": "ln1", "attn": "attention",
+                       "ln2": "ln2", "mlp": "feed_forward"},
     },
 ]
 

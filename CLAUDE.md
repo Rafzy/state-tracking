@@ -160,7 +160,7 @@ bash bash_scripts/run_intervention.sh \
 
 ## Adding a New Model (Model Expansion Goal)
 
-Currently supported families: `gpt2`, `pythia`, `qwen3`, `llama`. Adding another is one registry entry plus one boilerplate class — no more if/elif chains scattered across files. The architecture metadata lives in `_FAMILY_REGISTRY` in `utils/model_utils.py`, and both training and interpret pipelines look it up at runtime.
+Currently supported families: `gpt2`, `pythia`, `qwen3`, `llama`, `rwkv`. Adding another is one registry entry plus one boilerplate class — no more if/elif chains scattered across files. The architecture metadata lives in `_FAMILY_REGISTRY` in `utils/model_utils.py`, and both training and interpret pipelines look it up at runtime.
 
 ### 1. `utils/models.py` — Add a `WithLayerTargets` class
 
