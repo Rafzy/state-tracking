@@ -16,4 +16,9 @@ probe_results/
 *.ipynb
 s3*/
 test.py
+<<<<<<< HEAD
 pyrightconfig.json
+=======
+pyrightconfig.json
+CLAUDE.md
+>>>>>>> 7810a63d3c5ff60e9bfb3958c5223c6b7cabe6c9
