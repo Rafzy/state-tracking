@@ -153,6 +153,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         metric_for_best_model="eval_loss" if args.early_stopping else None,
         greater_is_better=False if args.early_stopping else True,
         load_best_model_at_end=True if args.early_stopping else False,
+        learning_rate=1e-5
     )
     
     trainer = Trainer(
