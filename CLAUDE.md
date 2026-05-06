@@ -122,11 +122,16 @@ bash bash_scripts/train.sh EleutherAI/pythia-160M 3 S3_NTP_data/train \
   checkpoints/pythia_S3_NTP --supervision_type next_token
 
 # Key optional flags
-#   --no_pretrain          train from scratch
-#   --use_bfloat16         mixed precision
-#   --early_stopping       stop on val loss plateau
-#   --full_determinism     reproducible runs
+#   --no_pretrain                                  train from scratch
+#   --use_bfloat16                                 mixed precision
+#   --early_stopping                               stop on val loss plateau
+#   --full_determinism                             reproducible runs
 #   --seed 42
+#   --lr_scheduler_type reduce_lr_on_plateau       decay LR on eval_loss plateau
+#                                                  (forces step-cadence eval; combine with
+#                                                   --early_stopping to also load best model)
+#   --lr_scheduler_patience 2                      evals to wait before decaying
+#   --lr_scheduler_factor 0.5                      LR multiplier on each decay
 ```
 
 Checkpoints land in `<output_dir>/checkpoint-<num_steps>/`.
@@ -208,6 +213,7 @@ Both files validate at parse time. Add the new HF name(s) to `train.py`'s `--mod
 - `setup_model()` in `utils/model_utils.py` — registry-driven via `_resolve_family`.
 - `setup_model()` in `interpret/interpreters/base_interpreter.py` — registry-driven via `get_family_by_type` + `attrgetter`.
 - `get_hs_logits()` in `interpret/interpreters/activation_patching_interpreter.py` — registry-driven via the `submodules` field.
+- Optimizer / LR scheduler wiring in `train.py` (including `--lr_scheduler_type reduce_lr_on_plateau`) — handled by HF Trainer at the optimizer level, not per-architecture.
 
 If a future transformers release renames internal HF attributes (e.g., `model.layers` → `model.transformer.layers`), only the affected registry entry needs updating — every dispatch site reads from there.
 
