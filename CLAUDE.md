@@ -26,6 +26,15 @@ pip install -r requirements.txt
 - `wandb==0.19.8` — experiment tracking
 - `matplotlib==3.10.1`, `seaborn==0.13.2` — visualization
 
+### Hugging Face authentication (gated models)
+
+`meta-llama/*` weights are gated. Before training or interpreting any Llama model:
+
+1. Accept Meta's license on the model page (e.g., https://huggingface.co/meta-llama/Llama-3.2-1B).
+2. Authenticate from the shell with `huggingface-cli login`, or export `HF_TOKEN=<your-token>`.
+
+Without this, `from_pretrained` will fail with a 401. Non-gated families (GPT-2, Pythia, Qwen3, RWKV) need no auth.
+
 ---
 
 ## Repository Layout
@@ -116,6 +125,9 @@ python make_topic_training_data.py \
 ```bash
 # Direct supervision (default)
 bash bash_scripts/train.sh gpt2 3 S3_data/ checkpoints/gpt2_S3/
+
+# Llama 3.2-1B (gated — see Environment Setup for HF auth)
+bash bash_scripts/train.sh meta-llama/Llama-3.2-1B 3 S3_data/ checkpoints/llama32_1b_S3/
 
 # NTP supervision
 bash bash_scripts/train.sh EleutherAI/pythia-160M 3 S3_NTP_data/train \

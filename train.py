@@ -35,6 +35,7 @@ def parse_arguments():
         "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B",
         "Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B",
         "RWKV/rwkv-4-169m-pile",
+        "meta-llama/Llama-3.2-1B",
     ])
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--output_dir", type=str, default="checkpoints")
