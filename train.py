@@ -7,9 +7,10 @@ import wandb
 import random
 
 from transformers import (
-    TrainingArguments, 
-    Trainer, 
+    TrainingArguments,
+    Trainer,
     EarlyStoppingCallback,
+    TrainerCallback,
 )
 
 from utils.data_loaders import (
@@ -53,17 +54,32 @@ def parse_arguments():
     parser.add_argument("--full_determinism", action="store_true", default=False)
     parser.add_argument("--early_stopping", action="store_true", default=False)
     parser.add_argument(
+        "--learning_rate", type=float, default=5e-5,
+        help="Initial learning rate (HF Trainer default 5e-5).",
+    )
+    parser.add_argument(
         "--lr_scheduler_type", type=str, default="linear",
-        choices=["linear", "reduce_lr_on_plateau"],
-        help="LR scheduler. 'linear' is the HF default; 'reduce_lr_on_plateau' decays LR when eval_loss plateaus.",
+        choices=["linear", "cosine", "constant", "constant_with_warmup"],
+        help="Base HF scheduler. Runs every step. Combine with --reduce_lr_on_plateau "
+             "to additionally decay on eval_loss plateau.",
+    )
+    parser.add_argument(
+        "--reduce_lr_on_plateau", action="store_true", default=False,
+        help="Stack a plateau decay on top of --lr_scheduler_type. On each eval where "
+             "eval_loss does not improve for --lr_scheduler_patience evals, the base LR "
+             "is multiplied by --lr_scheduler_factor.",
     )
     parser.add_argument(
         "--lr_scheduler_patience", type=int, default=2,
-        help="ReduceLROnPlateau patience, in eval-step units. Ignored unless --lr_scheduler_type=reduce_lr_on_plateau.",
+        help="Plateau patience in eval-step units. Used only with --reduce_lr_on_plateau.",
     )
     parser.add_argument(
         "--lr_scheduler_factor", type=float, default=0.5,
-        help="ReduceLROnPlateau decay factor. Ignored unless --lr_scheduler_type=reduce_lr_on_plateau.",
+        help="Plateau decay multiplier. Used only with --reduce_lr_on_plateau.",
+    )
+    parser.add_argument(
+        "--lr_scheduler_min_lr", type=float, default=0.0,
+        help="Floor for the plateau-reduced base LR. Used only with --reduce_lr_on_plateau.",
     )
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
     parser.add_argument("--disable_wandb", action="store_true", default=False)
@@ -135,23 +151,67 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False):
     return train_dataset, eval_dataset
 
 
+class ReduceBaseLROnPlateauCallback(TrainerCallback):
+    """Decays an HF Trainer scheduler's base_lrs on eval_loss plateau.
+
+    Stacks on top of any per-step scheduler (linear/cosine/constant). The per-step
+    scheduler keeps owning param_group['lr']; this callback shrinks its base_lrs in
+    place so future per-step values follow the same shape at a smaller amplitude.
+    Mirrors torch.optim.lr_scheduler.ReduceLROnPlateau defaults
+    (mode="min", threshold=1e-4, threshold_mode="rel").
+    """
+
+    def __init__(self, factor, patience, min_lr=0.0, threshold=1e-4):
+        if not 0.0 < factor < 1.0:
+            raise ValueError(f"factor must be in (0, 1), got {factor}")
+        if patience < 0:
+            raise ValueError(f"patience must be >= 0, got {patience}")
+        self.factor = factor
+        self.patience = patience
+        self.min_lr = min_lr
+        self.threshold = threshold
+        self.best = float("inf")
+        self.num_bad_evals = 0
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if metrics is None:
+            return
+        eval_loss = metrics.get("eval_loss")
+        if eval_loss is None:
+            return
+
+        if eval_loss < self.best * (1.0 - self.threshold):
+            self.best = eval_loss
+            self.num_bad_evals = 0
+            return
+
+        self.num_bad_evals += 1
+        if self.num_bad_evals <= self.patience:
+            return
+
+        scheduler = kwargs.get("lr_scheduler")
+        if scheduler is None or not hasattr(scheduler, "base_lrs"):
+            return
+
+        old = list(scheduler.base_lrs)
+        scheduler.base_lrs = [max(lr * self.factor, self.min_lr) for lr in old]
+        print(
+            f"[ReduceBaseLROnPlateau] step={state.global_step} "
+            f"eval_loss={eval_loss:.6f} best={self.best:.6f} "
+            f"base_lrs {old} -> {scheduler.base_lrs}"
+        )
+        self.num_bad_evals = 0
+
+
 def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator):
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
     wandb.init(project="state-tracking", name=args.output_dir)
 
-    use_plateau = args.lr_scheduler_type == "reduce_lr_on_plateau"
-    # Both early stopping and ReduceLROnPlateau need step-cadence eval_loss to react to.
+    use_plateau = args.reduce_lr_on_plateau
+    # Both early stopping and the plateau callback need step-cadence eval_loss to react to.
     need_step_eval = args.early_stopping or use_plateau
-    # HF Trainer requires metric_for_best_model when lr_scheduler_type="reduce_lr_on_plateau".
     need_metric = args.early_stopping or use_plateau
-
-    scheduler_kwargs = {}
-    if use_plateau:
-        scheduler_kwargs = {
-            "factor": args.lr_scheduler_factor,
-            "patience": args.lr_scheduler_patience,
-        }
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -180,8 +240,8 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         metric_for_best_model="eval_loss" if need_metric else None,
         greater_is_better=False if need_metric else True,
         load_best_model_at_end=True if args.early_stopping else False,
+        learning_rate=args.learning_rate,
         lr_scheduler_type=args.lr_scheduler_type,
-        lr_scheduler_kwargs=scheduler_kwargs,
     )
 
     trainer = Trainer(
@@ -193,11 +253,18 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         eval_dataset=eval_dataset,
     )
 
+    if use_plateau:
+        trainer.add_callback(ReduceBaseLROnPlateauCallback(
+            factor=args.lr_scheduler_factor,
+            patience=args.lr_scheduler_patience,
+            min_lr=args.lr_scheduler_min_lr,
+        ))
+
     if args.early_stopping:
-        # Keep early_stopping_patience > lr_scheduler_patience so the scheduler gets a
+        # Keep early_stopping_patience > lr_scheduler_patience so the plateau callback gets a
         # chance to reduce the LR before training is killed on a plateau.
         trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=3))
-    
+
     return trainer
 
 

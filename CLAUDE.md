@@ -127,11 +127,17 @@ bash bash_scripts/train.sh EleutherAI/pythia-160M 3 S3_NTP_data/train \
 #   --early_stopping                               stop on val loss plateau
 #   --full_determinism                             reproducible runs
 #   --seed 42
-#   --lr_scheduler_type reduce_lr_on_plateau       decay LR on eval_loss plateau
-#                                                  (forces step-cadence eval; combine with
-#                                                   --early_stopping to also load best model)
+#   --learning_rate 5e-5                           initial LR (HF Trainer default)
+#   --lr_scheduler_type linear                     base per-step schedule
+#                                                  (linear|cosine|constant|constant_with_warmup)
+#   --reduce_lr_on_plateau                         stack plateau decay on top of the base
+#                                                  schedule; shrinks scheduler.base_lrs when
+#                                                  eval_loss plateaus (forces step-cadence eval;
+#                                                  combine with --early_stopping to also load
+#                                                  the best model)
 #   --lr_scheduler_patience 2                      evals to wait before decaying
-#   --lr_scheduler_factor 0.5                      LR multiplier on each decay
+#   --lr_scheduler_factor 0.5                      base-LR multiplier on each decay
+#   --lr_scheduler_min_lr 0.0                      floor for the decayed base LR
 ```
 
 Checkpoints land in `<output_dir>/checkpoint-<num_steps>/`.
