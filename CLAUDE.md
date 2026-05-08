@@ -33,6 +33,11 @@ pip install -r requirements.txt
 1. Accept Meta's license on the model page (e.g., https://huggingface.co/meta-llama/Llama-3.2-1B).
 2. Authenticate from the shell with `huggingface-cli login`, or export `HF_TOKEN=<your-token>`.
 
+OpenELM also reaches for a gated tokenizer: Apple's `apple/OpenELM-*` models ship
+no tokenizer files of their own and use `meta-llama/Llama-2-7b-hf`. Accept the
+**Llama-2** license at https://huggingface.co/meta-llama/Llama-2-7b-hf in
+addition to Llama-3.2 before running any OpenELM workflow.
+
 Without this, `from_pretrained` will fail with a 401. Non-gated families (GPT-2, Pythia, Qwen3, RWKV) need no auth.
 
 ---
@@ -129,6 +134,9 @@ bash bash_scripts/train.sh gpt2 3 S3_data/ checkpoints/gpt2_S3/
 # Llama 3.2-1B (gated — see Environment Setup for HF auth)
 bash bash_scripts/train.sh meta-llama/Llama-3.2-1B 3 S3_data/ checkpoints/llama32_1b_S3/
 
+# OpenELM-270M (Apple — uses Llama-2 tokenizer; both are gated)
+bash bash_scripts/train.sh apple/OpenELM-270M 3 S3_data/ checkpoints/openelm270m_S3/
+
 # NTP supervision
 bash bash_scripts/train.sh EleutherAI/pythia-160M 3 S3_NTP_data/train \
   checkpoints/pythia_S3_NTP --supervision_type next_token
@@ -183,7 +191,7 @@ bash bash_scripts/run_intervention.sh \
 
 ## Adding a New Model (Model Expansion Goal)
 
-Currently supported families: `gpt2`, `pythia`, `qwen3`, `llama`, `rwkv`. Adding another is one registry entry plus one boilerplate class — no more if/elif chains scattered across files. The architecture metadata lives in `_FAMILY_REGISTRY` in `utils/model_utils.py`, and both training and interpret pipelines look it up at runtime.
+Currently supported families: `gpt2`, `pythia`, `qwen3`, `llama`, `rwkv`, `openelm`. Adding another is one registry entry plus one boilerplate class — no more if/elif chains scattered across files. The architecture metadata lives in `_FAMILY_REGISTRY` in `utils/model_utils.py`, and both training and interpret pipelines look it up at runtime.
 
 ### 1. `utils/models.py` — Add a `WithLayerTargets` class
 
@@ -225,6 +233,16 @@ The `family` string is what users pass via `--model_type`; the `name_re` is what
 ### 3. `train.py` and `interpret/main.py` — Add to `choices` lists
 
 Both files validate at parse time. Add the new HF name(s) to `train.py`'s `--model choices=[]` and the new short string to `interpret/main.py`'s `--model_type choices=[]`. If you forget, argparse will reject the CLI value with a clear error.
+
+### Optional registry fields (for non-mainline architectures)
+
+OpenELM is the first family that doesn't ship in `transformers` or in HF's tokenizer index. It's supported via three optional registry fields — all default to absent / False, so existing entries are untouched:
+
+- `tokenizer_name` (str): override for `AutoTokenizer.from_pretrained` when the model has no tokenizer of its own. OpenELM uses `meta-llama/Llama-2-7b-hf`.
+- `trust_remote_code` (bool): threaded into every `from_pretrained` and into `nnsight.LanguageModel` for families whose modeling code lives in the HF repo rather than in `transformers`.
+- `logits_via_top_level` (bool): the activation-patching interpreter normally traces `lm_head.output`, but for models with `share_input_output_layers=True` (like OpenELM-270M) `lm_head` is `None`. Setting this flag routes logits access through `model.output.logits` instead.
+
+When the modeling class can't be imported statically (again, OpenELM), use `model_class_factory` / `custom_class_factory` (callables that return the class) in place of `model_class` / `custom_class`. The factories are invoked lazily on first use, so importing `utils.models` stays offline-safe.
 
 ### What you do NOT need to edit anymore
 

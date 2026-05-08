@@ -154,3 +154,38 @@ class RwkvModelWithLayerTargets(ModelWithLayerTargetsMixin, RwkvForCausalLM):
 
     def forward(self, *args, **kwargs):
         return self.forward_with_layer_targets(*args, **kwargs)
+
+
+_OPENELM_WLT_CACHE = None
+
+
+def get_openelm_with_layer_targets():
+    """Lazy-build (OpenELMForCausalLM, OpenELMModelWithLayerTargets).
+
+    OpenELM's modeling code lives in Apple's HF repo, not in transformers, so
+    the class is fetched via trust_remote_code on first use. Wrapping the
+    subclass creation in a function keeps `import utils.models` offline-safe
+    for users on other families.
+    """
+    global _OPENELM_WLT_CACHE
+    if _OPENELM_WLT_CACHE is not None:
+        return _OPENELM_WLT_CACHE
+
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
+    OpenELMForCausalLM = get_class_from_dynamic_module(
+        "modeling_openelm.OpenELMForCausalLM",
+        "apple/OpenELM-270M",
+    )
+
+    class OpenELMModelWithLayerTargets(ModelWithLayerTargetsMixin, OpenELMForCausalLM):
+        """OpenELM model with layer-wise supervision."""
+
+        def __init__(self, config, layerwise_supervision_config=None):
+            super().__init__(config)
+            self.init_layer_targets(config, layerwise_supervision_config)
+
+        def forward(self, *args, **kwargs):
+            return self.forward_with_layer_targets(*args, **kwargs)
+
+    _OPENELM_WLT_CACHE = (OpenELMForCausalLM, OpenELMModelWithLayerTargets)
+    return _OPENELM_WLT_CACHE

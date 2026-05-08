@@ -26,6 +26,7 @@ from utils.models import (
     PythiaModelWithLayerTargets,
     Qwen3ModelWithLayerTargets,
     RwkvModelWithLayerTargets,
+    get_openelm_with_layer_targets,
 )
 
 
@@ -100,7 +101,39 @@ _FAMILY_REGISTRY = [
         "submodules": {"ln1": "ln1", "attn": "attention",
                        "ln2": "ln2", "mlp": "feed_forward"},
     },
+    {
+        "family": "openelm",
+        "name_re": re.compile(r"^apple/OpenELM-", re.IGNORECASE),
+        "config_class": AutoConfig,
+        # OpenELM's classes live in Apple's HF repo (loaded via trust_remote_code).
+        # Factories defer the dynamic import until first use.
+        "model_class_factory":  lambda: get_openelm_with_layer_targets()[0],
+        "custom_class_factory": lambda: get_openelm_with_layer_targets()[1],
+        "tokenizer_name":   "meta-llama/Llama-2-7b-hf",
+        "trust_remote_code": True,
+        "inner_model_path": "transformer",
+        "layers_path":      "transformer.layers",
+        "embeddings_path":  "transformer.token_embeddings",
+        # share_input_output_layers=True for the 270M variant -> .lm_head is None;
+        # interpreters branch on logits_via_top_level to use model.output.logits instead.
+        "lm_head_path":     "lm_head",
+        "logits_via_top_level": True,
+        "n_layers_attr":    "num_transformer_layers",
+        "submodules": {"ln1": "attn_norm", "attn": "attn",
+                       "ln2": "ffn_norm",  "mlp": "ffn"},
+    },
 ]
+
+
+def _get_model_class(spec, custom: bool):
+    """Resolve the (custom) model class for a family spec, calling factories if present."""
+    if custom:
+        if "custom_class" in spec:
+            return spec["custom_class"]
+        return spec["custom_class_factory"]()
+    if "model_class" in spec:
+        return spec["model_class"]
+    return spec["model_class_factory"]()
 
 
 def _resolve_family(model_name: str) -> dict:
@@ -131,24 +164,39 @@ def get_family_by_type(model_type: str) -> dict:
 def setup_tokenizer(model_name, state_tokens, action_tokens):
     """
     Set up the tokenizer based on the model type.
-    
+
     Args:
         model_name: Name of the model to load tokenizer for
         state_tokens: Dictionary of state -> state tokens
         action_tokens: Dictionary of action -> action tokens
-        
+
     Returns:
         tokenizer: The tokenizer
     """
     print("Loading tokenizer")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
+    # Some families (e.g. OpenELM) ship no tokenizer of their own; the registry
+    # spec then names a stand-in (Apple's OpenELM uses meta-llama/Llama-2-7b-hf).
+    # When loading from a local checkpoint dir we skip the registry lookup and
+    # use whatever was saved alongside the checkpoint.
+    tokenizer_load_name = model_name
+    trust_remote_code = False
+    if not os.path.isdir(model_name):
+        try:
+            spec = _resolve_family(model_name)
+            if spec.get("tokenizer_name"):
+                tokenizer_load_name = spec["tokenizer_name"]
+            trust_remote_code = bool(spec.get("trust_remote_code", False))
+        except ValueError:
+            pass
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_load_name, trust_remote_code=trust_remote_code)
+
     tokenizer.pad_token = tokenizer.eos_token
-    
+
     # Add special tokens for the task
     tokenizer.add_tokens(list(action_tokens.values()) + [f" {action}" for action in action_tokens.values()])
     tokenizer.add_tokens(list(state_tokens.values()) + [f" {state}" for state in state_tokens.values()])
-    
+
     return tokenizer
 
 
@@ -173,10 +221,12 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
     """
     print("Loading model")
     
+    trust_remote_code = False
     if model_name:
         spec = _resolve_family(model_name)
         config_class = spec["config_class"]
-        model_class = spec["custom_class"] if use_custom_models else spec["model_class"]
+        model_class = _get_model_class(spec, custom=use_custom_models)
+        trust_remote_code = bool(spec.get("trust_remote_code", False))
     else:
         model_class = AutoModelForCausalLM
         config_class = AutoConfig
@@ -207,13 +257,14 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
                 device_map="auto",
                 torch_dtype=torch.bfloat16 if use_bfloat16 else torch.float32,
                 layerwise_supervision_config=layerwise_supervision_config,
+                trust_remote_code=trust_remote_code,
             )
         else:
-            model = model_class.from_pretrained(checkpoint_path)
+            model = model_class.from_pretrained(checkpoint_path, trust_remote_code=trust_remote_code)
     elif no_pretrain:
         # Initialize a new model with random weights
         print("Initializing model with random weights")
-        config = config_class.from_pretrained(model_name)
+        config = config_class.from_pretrained(model_name, trust_remote_code=trust_remote_code)
         if use_custom_models:
             config.torch_dtype = torch.bfloat16 if use_bfloat16 else torch.float32
             model = model_class(config, layerwise_supervision_config=layerwise_supervision_config)
@@ -227,9 +278,10 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
                 device_map="auto",
                 torch_dtype=torch.bfloat16 if use_bfloat16 else torch.float32,
                 layerwise_supervision_config=layerwise_supervision_config,
+                trust_remote_code=trust_remote_code,
             )
         else:
-            model = model_class.from_pretrained(model_name)
+            model = model_class.from_pretrained(model_name, trust_remote_code=trust_remote_code)
     
     # Resize token embeddings to match tokenizer
     model.resize_token_embeddings(len(tokenizer))

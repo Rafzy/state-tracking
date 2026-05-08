@@ -36,6 +36,7 @@ def parse_arguments():
         "Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B",
         "RWKV/rwkv-4-169m-pile",
         "meta-llama/Llama-3.2-1B",
+        "apple/OpenELM-270M",
     ])
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--output_dir", type=str, default="checkpoints")

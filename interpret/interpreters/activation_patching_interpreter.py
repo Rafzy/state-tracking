@@ -21,6 +21,19 @@ class ActivationPatchingInterpreter(BaseInterpreter):
         self.intervene_output_type = kwargs.get("intervene_output_type", "state")
         self.patching_mode = kwargs.get("patching_mode", "substitution")
         self.token_increments = kwargs.get("token_increments", 1)
+
+    def _logits_proxy(self):
+        """nnsight proxy for the model's final logits.
+
+        Most families expose them via lm_head.output. OpenELM-270M has
+        share_input_output_layers=True so .lm_head is None and logits are
+        computed inline in the parent forward; in that case the registry sets
+        logits_via_top_level=True and we read self.model.output.logits.
+        """
+        spec = get_family_by_type(self.model_type)
+        if spec.get("logits_via_top_level"):
+            return self.model.output.logits
+        return self.lm_head.output
     
     def generate_prompt_pairs(self, prompts: Set[str], diff_parity=False) -> Dict[str, List[Tuple[str, str]]]:
         """Generate pairs of prompts for analysis"""
@@ -98,8 +111,8 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                                     model_component = model_component[0]
                                 hidden_states[layer_idx][component] = model_component.cpu().save()
                     
-                    # Get logits from the lm_head
-                    clean_logits = self.sf(self.lm_head.output)
+                    # Get logits from the lm_head (or top-level output for OpenELM)
+                    clean_logits = self.sf(self._logits_proxy())
                     clean_logits = {
                         action: clean_logits[-1,-1,self.action_to_token_ids[action]].cpu().to(dtype=float).item().save()
                         for action in self.action_to_token_ids
@@ -181,7 +194,7 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                                     model_component[token_range] = replace_model_component[token_range]
                             
                             # Get logits from the patched model
-                            patched_logits = self.sf(self.lm_head.output)
+                            patched_logits = self.sf(self._logits_proxy())
                             patched_logits = {
                                 action: patched_logits[-1, -1, self.action_to_token_ids[action]].cpu().to(dtype=float).item().save()
                                 for action in self.action_to_token_ids

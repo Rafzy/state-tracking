@@ -5,7 +5,7 @@ from transformers import AutoTokenizer
 from nnsight import LanguageModel
 from torch.nn import LogSoftmax
 from permutation_task import compute_parity, PermutationTask
-from utils.model_utils import get_family_by_type
+from utils.model_utils import get_family_by_type, _get_model_class
 from interpret.visualization_manager import VisualizationManager
 import random
 import os
@@ -56,19 +56,30 @@ class BaseInterpreter:
 
     def setup_model(self):
         """Initialize model and tokenizer"""
-        self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_dir)
-        if self.model_type in ("gpt2", "rwkv"):
+        spec = get_family_by_type(self.model_type)
+        trust_remote_code = bool(spec.get("trust_remote_code", False))
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.checkpoint_dir, trust_remote_code=trust_remote_code,
+        )
+        # OpenELM uses Llama-2 tokenizer (no pad token by default), same as gpt2/rwkv.
+        if self.model_type in ("gpt2", "rwkv", "openelm"):
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.tokenizer.add_tokens(
             list(self.action_to_nl.values()) + [f" {action}" for action in self.action_to_nl.values()]
         )
 
-        self.model = LanguageModel(self.checkpoint_dir, device_map=self.device, dispatch=True)
+        lm_kwargs = {"device_map": self.device, "dispatch": True}
+        if trust_remote_code:
+            lm_kwargs["trust_remote_code"] = True
+        self.model = LanguageModel(self.checkpoint_dir, **lm_kwargs)
         self.model.resize_token_embeddings(len(self.tokenizer))
 
-        spec = get_family_by_type(self.model_type)
-        self.model_hf     = spec["model_class"].from_pretrained(self.checkpoint_dir).cuda(0)
+        model_cls = _get_model_class(spec, custom=False)
+        self.model_hf     = model_cls.from_pretrained(
+            self.checkpoint_dir, trust_remote_code=trust_remote_code,
+        ).cuda(0)
         # Disable RWKV's inference-mode weight rescaling so layer-wise hidden states
         # are comparable across layers (avoids 0.5x rescale every config.rescale_every).
         if self.model_type == "rwkv":
@@ -79,7 +90,13 @@ class BaseInterpreter:
         self.inner_model  = attrgetter(spec["inner_model_path"])(self.model)
         self.embeddings   = attrgetter(spec["embeddings_path"])(self.model)
         self.model_layers = attrgetter(spec["layers_path"])(self.model)
-        self.lm_head      = attrgetter(spec["lm_head_path"])(self.model)
+        # When logits_via_top_level is True (e.g. OpenELM with
+        # share_input_output_layers), .lm_head can be None on the underlying model;
+        # interpreters route around it via self.model.output.logits.
+        self.lm_head      = (
+            None if spec.get("logits_via_top_level")
+            else attrgetter(spec["lm_head_path"])(self.model)
+        )
 
         self.model_hf.resize_token_embeddings(len(self.tokenizer))
         self.action_to_token_ids = {
