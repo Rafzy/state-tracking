@@ -101,10 +101,13 @@ class MetadataProcessor:
             Dict: Dictionary with state information
         """
         # Calculate current state
-        curr_state = self.mi.cumulative_product("".join(curr_toks[:self.end_idx]))[-1]
-        
+        curr_state = self.mi.cumulative_product(curr_toks[:self.end_idx])[-1]
+
         # Get action and state information
-        curr_action = self.mi.nl_to_action[curr_toks[-1].strip()]
+        last_tok_str = self.mi.tokenizer.convert_tokens_to_string(
+            [curr_toks[-1]]
+        ).strip()
+        curr_action = self.mi.nl_to_action[last_tok_str]
         curr_state_nl = self.mi.action_to_nl[curr_state]
         curr_state_parity = compute_parity(curr_state)
         curr_action_parity = compute_parity(curr_action)
@@ -154,7 +157,7 @@ class MetadataProcessor:
         
         # Calculate suffixes of different lengths
         suffix_cumprod = [
-            self.mi.action_to_nl[self.mi.cumulative_product("".join(curr_toks[-i:]))[-1]]
+            self.mi.action_to_nl[self.mi.cumulative_product(curr_toks[-i:])[-1]]
             for i in range(1, len(curr_toks)+1)
         ] + [None for _ in range(len(curr_toks)+1, prompt_len+1)]
         

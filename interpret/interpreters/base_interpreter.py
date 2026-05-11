@@ -134,13 +134,24 @@ class BaseInterpreter:
         
         return prompts
 
-    def cumulative_product(self, prompt):
-        """Calculate cumulative states from a sequence of actions"""
+    def cumulative_product(self, prompt_or_toks):
+        """Calculate cumulative states from a sequence of actions.
+
+        Accepts either a raw prompt string or an already-tokenized list of
+        tokens. Avoids re-tokenizing a string that was itself produced by
+        joining tokens, which is unsafe for SentencePiece (the ``▁`` prefix
+        is a literal character, not whitespace, so the joined string
+        re-tokenizes to ``▁▁<action>``).
+        """
+        if isinstance(prompt_or_toks, str):
+            prompt_toks = self.tokenizer.tokenize(prompt_or_toks)
+        else:
+            prompt_toks = prompt_or_toks
         states = []
         curr_state = list(self.INIT_STATE)
-        prompt_toks = self.tokenizer.tokenize(prompt)
         for token in prompt_toks:
-            curr_action = self.nl_to_action[token.strip()]
+            action_str = self.tokenizer.convert_tokens_to_string([token]).strip()
+            curr_action = self.nl_to_action[action_str]
             new_state = np.copy(curr_state)
             for old_pos, new_pos in enumerate(curr_action):
                 new_state[old_pos] = curr_state[new_pos-1]
