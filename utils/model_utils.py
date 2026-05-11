@@ -15,6 +15,7 @@ from transformers import (
     RwkvConfig,
 )
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
+import json
 import re
 import torch
 import os
@@ -136,6 +137,21 @@ def _get_model_class(spec, custom: bool):
     return spec["model_class_factory"]()
 
 
+def _checkpoint_needs_remote_code(checkpoint_path: str) -> bool:
+    """True if the checkpoint's config.json declares an `auto_map` — HF's own
+    signal that loading requires custom modeling code (e.g. OpenELM).
+    Used when loading purely from a local checkpoint, where the registry can't
+    be consulted by name."""
+    config_file = os.path.join(checkpoint_path, "config.json")
+    if not os.path.isfile(config_file):
+        return False
+    try:
+        with open(config_file) as f:
+            return "auto_map" in json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def _resolve_family(model_name: str) -> dict:
     """Look up the family spec for a given HF model name. Raises ValueError if no family matches."""
     for spec in _FAMILY_REGISTRY:
@@ -188,6 +204,8 @@ def setup_tokenizer(model_name, state_tokens, action_tokens):
             trust_remote_code = bool(spec.get("trust_remote_code", False))
         except ValueError:
             pass
+    elif _checkpoint_needs_remote_code(model_name):
+        trust_remote_code = True
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_load_name, trust_remote_code=trust_remote_code)
 
@@ -230,7 +248,7 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
     else:
         model_class = AutoModelForCausalLM
         config_class = AutoConfig
-    
+
     # Check for checkpoints in output directory (for training)
     if not checkpoint_path and output_dir and os.path.exists(output_dir):
         subdirs = [d for d in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, d))]
@@ -247,7 +265,13 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
                 checkpoint_path = os.path.join(output_dir, min_subdir)
             else:
                 print(f"Warning: Found subdirectories in {output_dir}, but none match the expected 'checkpoint-NUMBER' format.")
-    
+
+    # When loading purely from a checkpoint (e.g. eval.py passes no --model),
+    # the registry can't be consulted by name. Detect custom modeling code via
+    # config.json's auto_map field — present for families like OpenELM.
+    if not model_name and checkpoint_path and _checkpoint_needs_remote_code(checkpoint_path):
+        trust_remote_code = True
+
     # Load or create model
     if checkpoint_path:
         print(f"Loading model from checkpoint: {checkpoint_path}")
