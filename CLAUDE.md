@@ -272,6 +272,9 @@ Lengthwise probe results are cached to `probe_results/` as numpy arrays. Subsequ
 ### nnsight Tracing
 Both probing and activation patching use `nnsight` to extract hidden states. The architecture-specific layer access pattern (e.g., `model.transformer.h` vs `model.gpt_neox.layers` vs `model.model.layers`) is resolved from `_FAMILY_REGISTRY` via `operator.attrgetter` — no per-family branches in the interpreter code.
 
+### Activation Patching: Degenerate Pairs (`interpret/interpreters/activation_patching_interpreter.py`)
+For `--patching_mode substitution`, the recovery metric `(logit_diff - base_logit_diff) / (new_logit_diff - base_logit_diff)` is undefined when the model's top prediction is the same for the base and altered prompts (`base_answer == new_answer`) — every term in the formula is exactly 0, producing `0/0 = NaN`. Such pairs are skipped: `get_metric_from_logits` returns `None`, and `run()` filters them out so they contribute neither a per-pair heatmap (`same_parity/<i>/{prefix,suffix,window}.png`) nor to the average plot (`{intervene_type}_same_parity.png`). The console prints a one-line summary per `(intervene_type, parity_type)` of how many pairs were dropped. Kept per-pair folders retain their **original** pair index, so numbering may be non-contiguous after a skip. Smaller models on S3 same-parity swaps trigger this often because there are only 3 same-parity alternatives per action; if the model can't tell them apart, no contrast exists to measure recovery against. Prior to this guard, a single NaN-filled pair propagated through `np.stack(...).mean(0)` and rendered the entire average heatmap as an all-white plot.
+
 ---
 
 ## Experiment Tracking

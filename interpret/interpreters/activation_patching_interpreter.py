@@ -220,6 +220,10 @@ class ActivationPatchingInterpreter(BaseInterpreter):
         base_answer = max(base_logits, key=base_logits.get)
         new_answer = max(new_logits, key=new_logits.get)
         if patching_mode == "substitution":
+            if base_answer == new_answer:
+                # Degenerate pair: no contrast between base and altered prompt,
+                # so the recovery metric (0/0) is undefined. Skip upstream.
+                return None
             answer = new_answer
         else:
             answer = base_answer
@@ -308,8 +312,13 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                 
                 # Process pairs and collect results
                 all_logit_diffs = []
-                
-                for pair in tqdm(pairs[parity_type], desc=f"Processing {parity_type} pairs for {intervene_type}"):
+                kept_pair_indices = []
+                n_skipped = 0
+
+                for i, pair in enumerate(tqdm(
+                    pairs[parity_type],
+                    desc=f"Processing {parity_type} pairs for {intervene_type}",
+                )):
                     patching_results, base_logits, new_logits = self.get_patching_results_pair(
                         pair,
                         layer_components,
@@ -318,13 +327,24 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                         replace_next_tokens=intervene_type == "suffix",
                         patching_mode=self.patching_mode,
                     )
-                    
-                    all_logit_diffs.append(self.get_metric_from_logits(
+
+                    metric = self.get_metric_from_logits(
                         patching_results, base_logits, new_logits, self.patching_mode,
-                    ))
-                
-                # Plot individual results
-                for i, (_, logit_diff) in enumerate(zip(pairs[parity_type], all_logit_diffs)):
+                    )
+                    if metric is None:
+                        n_skipped += 1
+                        continue
+                    all_logit_diffs.append(metric)
+                    kept_pair_indices.append(i)
+
+                if n_skipped > 0:
+                    print(
+                        f"Skipped {n_skipped}/{len(pairs[parity_type])} degenerate pairs "
+                        f"(base_answer == new_answer) for {intervene_type}/{parity_type}"
+                    )
+
+                # Plot individual results — keep original pair index in folder name
+                for i, logit_diff in zip(kept_pair_indices, all_logit_diffs):
                     self.visualization_manager.plot_logits(
                         logit_diff,
                         np.arange(0, self.n_tokens, self.token_increments),
@@ -334,11 +354,17 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                             f"{parity_type}/{i}/{intervene_type}",
                         ),
                     )
-                
+
                 plot_name = os.path.join(
                     output_fn,
                     f"{intervene_type}_{parity_type}",
                 )
+                if not all_logit_diffs:
+                    print(
+                        f"All pairs degenerate for {intervene_type}/{parity_type} "
+                        f"— skipping average plot"
+                    )
+                    continue
                 # Plot average results
                 self.visualization_manager.plot_logits(
                     np.stack(all_logit_diffs).mean(0),
