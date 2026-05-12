@@ -145,13 +145,17 @@ class ActivationPatchingInterpreter(BaseInterpreter):
                 
                 # Iterate through tokens in chunks of token_units
                 for token_idx in range(0, len(prompt_tokens), token_units):
-                    # Determine token range to patch
+                    # Determine token range to patch. The model output has BOS
+                    # prepended for Llama-family tokenizers, so shift the indices
+                    # taken against tokenizer.tokenize() up by self.bos_offset
+                    # before slicing into traced activations.
                     if replace_prev_tokens:
                         token_range = np.arange(0, min(len(prompt_tokens), token_idx+token_units))
                     elif replace_next_tokens:
                         token_range = np.arange(token_idx, len(prompt_tokens))
                     else:
                         token_range = np.arange(token_idx, min(len(prompt_tokens), token_idx+token_units))
+                    token_range = token_range + self.bos_offset
                     
                     # Perform patching using nnsight
                     with self.model.trace() as tracer:

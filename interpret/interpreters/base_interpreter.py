@@ -70,6 +70,20 @@ class BaseInterpreter:
             list(self.action_to_nl.values()) + [f" {action}" for action in self.action_to_nl.values()]
         )
 
+        # Llama-family tokenizers (Llama 3.2, Llama-2 / OpenELM) prepend BOS in
+        # full call-mode but not under .tokenize(). The probe/patching code
+        # uses .tokenize() to build labels yet feeds raw strings into nnsight,
+        # so per-position activations end up shifted by one relative to labels.
+        # eval.py:180-181 already strips this same column from predictions.
+        sample_ids = self.tokenizer("A", add_special_tokens=True)["input_ids"]
+        self.bos_offset = (
+            1
+            if self.tokenizer.bos_token_id is not None
+            and len(sample_ids) > 0
+            and sample_ids[0] == self.tokenizer.bos_token_id
+            else 0
+        )
+
         lm_kwargs = {"device_map": self.device, "dispatch": True}
         if trust_remote_code:
             lm_kwargs["trust_remote_code"] = True
