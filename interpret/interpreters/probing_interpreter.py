@@ -41,6 +41,10 @@ class ProbeInterpreter(BaseInterpreter):
     def get_layer_representations(self, prompts, token_positions=None, tqdm_desc=None):
         """Get layer representations for a set of prompts"""
         all_layer_reps = {}
+        # Activations are taken from the model's view of the prompt, which for
+        # Llama-family tokenizers begins with a BOS token. Labels are indexed
+        # against tokenizer.tokenize() (no BOS), so shift here to keep them aligned.
+        model_positions = [p + self.bos_offset for p in token_positions]
         # Process each prompt
         for prompt in tqdm(prompts, desc=tqdm_desc):
             layer_reps = {}
@@ -49,21 +53,21 @@ class ProbeInterpreter(BaseInterpreter):
                 with self.model.trace() as tracer:
                     with tracer.invoke(prompt) as invoker:
                         # Get embeddings
-                        layer_reps["embed"] = self.embeddings.output[:, token_positions, :].save()
+                        layer_reps["embed"] = self.embeddings.output[:, model_positions, :].save()
 
                         # Get layer representations
                         for layer_idx in range(self.n_layers):
                             for layer_component_path in self.layer_names[layer_idx]:
                                 model_component = self.model_layers[layer_idx]
-                                    
+
                                 subcomponents = layer_component_path.split(".")
                                 for subcomponent_name in subcomponents:
                                     model_component = getattr(model_component, subcomponent_name)
-                                    
+
                                 if layer_component_path in ["output", "attn.output", "self_attn.output","attention.output"]:
-                                    layer_reps[f"{layer_idx}.{layer_component_path}"] = model_component[0][:, token_positions, :].save()
+                                    layer_reps[f"{layer_idx}.{layer_component_path}"] = model_component[0][:, model_positions, :].save()
                                 else:
-                                    layer_reps[f"{layer_idx}.{layer_component_path}"] = model_component[:, token_positions, :].save()
+                                    layer_reps[f"{layer_idx}.{layer_component_path}"] = model_component[:, model_positions, :].save()
 
                 # Convert to numpy and store
                 for item in layer_reps:

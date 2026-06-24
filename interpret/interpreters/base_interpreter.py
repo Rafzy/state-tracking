@@ -1,16 +1,11 @@
 import torch
 import numpy as np
-from transformers import (
-    GPT2Tokenizer, 
-    AutoModel,
-    GPT2LMHeadModel,
-    LlamaForCausalLM,
-    AutoTokenizer
-)
+from operator import attrgetter
+from transformers import AutoTokenizer
 from nnsight import LanguageModel
 from torch.nn import LogSoftmax
 from permutation_task import compute_parity, PermutationTask
-import torch
+from utils.model_utils import get_family_by_type, _get_model_class
 from interpret.visualization_manager import VisualizationManager
 import random
 import os
@@ -61,44 +56,62 @@ class BaseInterpreter:
 
     def setup_model(self):
         """Initialize model and tokenizer"""
-        if self.model_type == "gpt2":
-            self.tokenizer = GPT2Tokenizer.from_pretrained(self.checkpoint_dir)
+        spec = get_family_by_type(self.model_type)
+        trust_remote_code = bool(spec.get("trust_remote_code", False))
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.checkpoint_dir, trust_remote_code=trust_remote_code,
+        )
+        # OpenELM uses Llama-2 tokenizer (no pad token by default), same as gpt2/rwkv.
+        if self.model_type in ("gpt2", "rwkv", "openelm"):
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        else:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_dir)
 
-        # Add special tokens
-        self.tokenizer.add_tokens(list(self.action_to_nl.values()) + [f" {action}" for action in self.action_to_nl.values()])
+        self.tokenizer.add_tokens(
+            list(self.action_to_nl.values()) + [f" {action}" for action in self.action_to_nl.values()]
+        )
 
-        # Initialize models
-        self.model = LanguageModel(self.checkpoint_dir, device_map=self.device, dispatch=True)
+        # Llama-family tokenizers (Llama 3.2, Llama-2 / OpenELM) prepend BOS in
+        # full call-mode but not under .tokenize(). The probe/patching code
+        # uses .tokenize() to build labels yet feeds raw strings into nnsight,
+        # so per-position activations end up shifted by one relative to labels.
+        # eval.py:180-181 already strips this same column from predictions.
+        sample_ids = self.tokenizer("A", add_special_tokens=True)["input_ids"]
+        self.bos_offset = (
+            1
+            if self.tokenizer.bos_token_id is not None
+            and len(sample_ids) > 0
+            and sample_ids[0] == self.tokenizer.bos_token_id
+            else 0
+        )
+
+        lm_kwargs = {"device_map": self.device, "dispatch": True}
+        if trust_remote_code:
+            lm_kwargs["trust_remote_code"] = True
+        self.model = LanguageModel(self.checkpoint_dir, **lm_kwargs)
         self.model.resize_token_embeddings(len(self.tokenizer))
 
-        if self.model_type == "gpt2":
-            self.model_hf = GPT2LMHeadModel.from_pretrained(self.checkpoint_dir).cuda(0)
-            self.n_layers = self.model.config.n_layer
-            self.layer_names = [["output"] for _ in range(self.n_layers)]
-            self.inner_model = self.model.transformer
-            self.embeddings = self.model.transformer.wte
-            self.model_layers = self.model.transformer.h
-            self.lm_head = self.model.lm_head
-        elif self.model_type == "llama":
-            self.model_hf = LlamaForCausalLM.from_pretrained(self.checkpoint_dir).cuda(0)
-            self.n_layers = self.model.config.num_hidden_layers
-            self.layer_names = [["output"] for _ in range(self.n_layers)]
-            self.inner_model = self.model.model
-            self.embeddings = self.model.model.embed_tokens
-            self.model_layers = self.model.model.layers
-            self.lm_head = self.model.lm_head
-        elif self.model_type == "pythia":
-            self.model_hf = AutoModel.from_pretrained(self.checkpoint_dir).cuda(0)
-            self.n_layers = self.model.config.num_hidden_layers
-            self.layer_names = [["output"] for _ in range(self.n_layers)]
-            self.inner_model = self.model.gpt_neox
-            self.embeddings = self.model.gpt_neox.embed_in
-            self.model_layers = self.model.gpt_neox.layers
-            self.lm_head = self.model.embed_out
-            
+        model_cls = _get_model_class(spec, custom=False)
+        self.model_hf     = model_cls.from_pretrained(
+            self.checkpoint_dir, trust_remote_code=trust_remote_code,
+        ).cuda(0)
+        # Disable RWKV's inference-mode weight rescaling so layer-wise hidden states
+        # are comparable across layers (avoids 0.5x rescale every config.rescale_every).
+        if self.model_type == "rwkv":
+            self.model.config.rescale_every = 0
+            self.model_hf.config.rescale_every = 0
+        self.n_layers     = getattr(self.model.config, spec["n_layers_attr"])
+        self.layer_names  = [["output"] for _ in range(self.n_layers)]
+        self.inner_model  = attrgetter(spec["inner_model_path"])(self.model)
+        self.embeddings   = attrgetter(spec["embeddings_path"])(self.model)
+        self.model_layers = attrgetter(spec["layers_path"])(self.model)
+        # When logits_via_top_level is True (e.g. OpenELM with
+        # share_input_output_layers), .lm_head can be None on the underlying model;
+        # interpreters route around it via self.model.output.logits.
+        self.lm_head      = (
+            None if spec.get("logits_via_top_level")
+            else attrgetter(spec["lm_head_path"])(self.model)
+        )
+
         self.model_hf.resize_token_embeddings(len(self.tokenizer))
         self.action_to_token_ids = {
             action: self.tokenizer.convert_tokens_to_ids(" "+action)
@@ -135,13 +148,24 @@ class BaseInterpreter:
         
         return prompts
 
-    def cumulative_product(self, prompt):
-        """Calculate cumulative states from a sequence of actions"""
+    def cumulative_product(self, prompt_or_toks):
+        """Calculate cumulative states from a sequence of actions.
+
+        Accepts either a raw prompt string or an already-tokenized list of
+        tokens. Avoids re-tokenizing a string that was itself produced by
+        joining tokens, which is unsafe for SentencePiece (the ``▁`` prefix
+        is a literal character, not whitespace, so the joined string
+        re-tokenizes to ``▁▁<action>``).
+        """
+        if isinstance(prompt_or_toks, str):
+            prompt_toks = self.tokenizer.tokenize(prompt_or_toks)
+        else:
+            prompt_toks = prompt_or_toks
         states = []
         curr_state = list(self.INIT_STATE)
-        prompt_toks = self.tokenizer.tokenize(prompt)
         for token in prompt_toks:
-            curr_action = self.nl_to_action[token.strip()]
+            action_str = self.tokenizer.convert_tokens_to_string([token]).strip()
+            curr_action = self.nl_to_action[action_str]
             new_state = np.copy(curr_state)
             for old_pos, new_pos in enumerate(curr_action):
                 new_state[old_pos] = curr_state[new_pos-1]
