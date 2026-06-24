@@ -1,21 +1,26 @@
 # (How) Do Language Models Track State
 
-The following repository contains code for the paper ["(How) Do Language Models Track State"](https://arxiv.org/abs/2503.02854)
+This repository is a fork of the original repository created by Belinda Z. Li
+This fork is used for our research "Modern Language Models on Permutation State Tracking" which is an extension to Belinda Li's paper "(How) Do Language Models Track State"
 
+The following repository contains modified code for the paper ["(How) Do Language Models Track State"](https://arxiv.org/abs/2503.02854)
 
 ## Setup
+
 1. First, create and prepare your environment
+
 ```bash
 conda create -n lm_state_track PYTHON=3.12
 conda activate lm_state_track
 pip install -r requirements.txt
 ```
 
-2. Install a version of pytorch compatible with your CUDA version: https://pytorch.org/get-started/locally/ 
-
+2. Install a version of pytorch compatible with your CUDA version: https://pytorch.org/get-started/locally/
 
 ## Create S3 and S5 data
+
 To generate S3 and S5 data, use
+
 ```bash
 python permutation_task.py \
 --num_items [3|5] \
@@ -24,6 +29,7 @@ python permutation_task.py \
 --train_ratio <percent_stories_for_train> \
 --story_length <length_of_stories>
 ```
+
 - `--num_items`: Number of items in the permutation task (3 for S3, 5 for S5)
 - `--data_dir`: Directory to save the generated data
 - `--num_stories`: Number of stories to generate
@@ -31,18 +37,22 @@ python permutation_task.py \
 - `--story_length`: Length of each story in tokens
 
 ## Train
+
 To train a model on the permutation task, use the training script:
+
 ```bash
 bash bash_scripts/train.sh <model_name> <num_items> <data_dir> <output_dir> [options]
 ```
 
 Required arguments:
+
 - `<model_name>`: Model architecture to use (e.g., gpt2, EleutherAI/pythia-70M)
 - `<num_items>`: Number of items in the permutation task (3 or 5)
 - `<data_dir>`: Directory containing training data
 - `<output_dir>`: Directory to save model checkpoints
 
 Optional arguments:
+
 - `--use_bfloat16`: Use bfloat16 precision for training
 - `--save_all_checkpoints <interval>`: Save checkpoints at specified interval (steps)
 - `--early_stopping`: Enable early stopping based on validation loss
@@ -59,12 +69,15 @@ Optional arguments:
 This script will save model checkpoints to `<output_dir>/checkpoint-<num_steps>/`. In subsequent sections, this should be fed in as `checkpoint_dir`.
 
 ## Test
+
 To generate plots of generalization accuracy across sequence lengths (section 4.4), run:
+
 ```bash
 bash bash_scripts/eval.sh <checkpoint_dir> <num_items> <data_dir>
 ```
 
 You can also run the evaluation with additional options:
+
 ```bash
 python eval.py \
   --checkpoint_dir <checkpoint_dir> \
@@ -76,6 +89,7 @@ python eval.py \
 ```
 
 Arguments:
+
 - `--checkpoint_dir`: Directory containing model checkpoint
 - `--data_dir`: Directory containing test data
 - `--num_items`: Number of items in the permutation task (3 or 5)
@@ -87,12 +101,14 @@ Arguments:
 
 This script will generate a generalization curve to `figures/gen_accuracy/<checkpoint_dir>.png`
 
-
 ## Analysis
+
 The remaining three of the analyses corresponding to section 4 of the paper (activation patching, probing, attention patterns) can be found run using the interpretation scripts provided under `bash_scripts/`.
 
 ### Activation Patching
+
 To run activation patching experiments:
+
 ```bash
 bash bash_scripts/run_intervention.sh \
   --model_type <model_type> \
@@ -106,6 +122,7 @@ bash bash_scripts/run_intervention.sh \
 ```
 
 Arguments:
+
 - `--model_type`: Type of model (pythia, gpt2, llama)
 - `--checkpoint_dir`: Directory containing model checkpoint
 - `--num_items`: Number of items in the permutation task (3 or 5)
@@ -118,7 +135,9 @@ Arguments:
 This script will generate an activation patching heatmap to `figures/intervene/<checkpoint_dir>.png`
 
 ### Probing
+
 To run probing experiments:
+
 ```bash
 bash bash_scripts/run_probe.sh \
   --model_type <model_type> \
@@ -129,6 +148,7 @@ bash bash_scripts/run_probe.sh \
 ```
 
 Arguments:
+
 - `--model_type`: Type of model (pythia, gpt2, llama)
 - `--checkpoint_dir`: Directory containing model checkpoint
 - `--num_items`: Number of items in the permutation task (3 or 5)
@@ -138,7 +158,9 @@ Arguments:
 This script will generate probe accuracy graphs to `figures/probes/<checkpoint_dir>.png`
 
 ### Lengthwise Probing
+
 To run lengthwise probing experiments:
+
 ```bash
 bash bash_scripts/run_lengthwise_probe.sh \
   --model_type <model_type> \
@@ -152,6 +174,7 @@ bash bash_scripts/run_lengthwise_probe.sh \
 ```
 
 Arguments:
+
 - `--model_type`: Type of model (pythia, gpt2, llama)
 - `--checkpoint_dir`: Directory containing model checkpoint
 - `--num_items`: Number of items in the permutation task (3 or 5)
@@ -163,9 +186,10 @@ Arguments:
 
 This script will generate lengthwise probe accuracy heatmaps to `figures/lengthwise_probe/<checkpoint_dir>_<n_tokens>.png`
 
-
 ## Create synthetic pretraining data with topic model
+
 To generate topic model data, run:
+
 ```bash
 python make_topic_training_data.py \
   --data_dir <output_dir> \
@@ -176,6 +200,7 @@ python make_topic_training_data.py \
 ```
 
 Arguments:
+
 - `--data_dir`: Directory to save the generated data
 - `--num_topics`: Number of topics in the topic model (default: 4)
 - `--num_stories`: Number of stories to generate (default: 1000000)
@@ -185,6 +210,7 @@ Arguments:
 - `--init_from_json`: Path to JSON file with initial topic distributions (optional)
 
 To replicate setting in the paper:
+
 ```bash
 python make_topic_training_data.py \
   --data_dir S3_NTP_data \
@@ -195,26 +221,29 @@ python make_topic_training_data.py \
 ```
 
 To train the LM with next-token-prediction on the generated data, use the same training script, but set `--supervision_type next_token`:
+
 ```bash
 bash bash_scripts/train.sh <model_name> <num_items> <topic_data_dir>/train <output_dir> --supervision_type next_token
 ```
 
 For example:
+
 ```bash
 bash bash_scripts/train.sh EleutherAI/pythia-160M 3 S3_NTP_data/train checkpoints/pythia_S3_NTP --supervision_type next_token
 ```
 
 ## Citation
+
 To cite this work, use
+
 ```
 @misc{li2025howlanguagemodelstrack,
-      title={(How) Do Language Models Track State?}, 
+      title={(How) Do Language Models Track State?},
       author={Belinda Z. Li and Zifan Carl Guo and Jacob Andreas},
       year={2025},
       eprint={2503.02854},
       archivePrefix={arXiv},
       primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2503.02854}, 
+      url={https://arxiv.org/abs/2503.02854},
 }
 ```
-
