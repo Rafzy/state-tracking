@@ -1,5 +1,8 @@
 # (How) Do Language Models Track State
 
+This repository is a fork of the original repository created by Belinda Z. Li
+This fork is used for our research "Modern Language Models on Permutation State Tracking" which is an extension to Belinda Li's paper "(How) Do Language Models Track State"
+
 The following repository contains code for the paper ["(How) Do Language Models Track State"](https://arxiv.org/abs/2503.02854)
 
 
